@@ -361,8 +361,8 @@ function loop(now) {
         let mx = 0, mz = 0;
         if (keys['KeyW'] || keys['ArrowUp']) mz += 1;
         if (keys['KeyS'] || keys['ArrowDown']) mz -= 1;
-        if (keys['KeyD'] || keys['ArrowRight']) mx += 1;
-        if (keys['KeyA'] || keys['ArrowLeft']) mx -= 1;
+        if (keys['KeyD'] || keys['ArrowRight']) mx -= 1;
+        if (keys['KeyA'] || keys['ArrowLeft']) mx += 1;
 
         const input = {
           move: [mx, mz],
