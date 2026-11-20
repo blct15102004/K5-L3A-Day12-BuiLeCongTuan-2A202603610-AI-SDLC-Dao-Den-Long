@@ -36,6 +36,9 @@ const FS_SOURCE = `
   uniform float uLanternLit[7];
   uniform int uLanternCount;
   uniform vec3 uPlayerPos;
+  uniform float uPlayerGlowStrength;
+  uniform vec3 uPulsePos;
+  uniform float uPulseStrength;
   uniform float uAmbientIntensity;
   uniform vec3 uFogColor;
   uniform float uUnlitEmissive;
@@ -51,10 +54,15 @@ const FS_SOURCE = `
     float diff = max(dot(normal, moonDir), 0.0);
     vec3 diffuse = diff * (0.25 + 0.45 * uAmbientIntensity) * vColor;
 
-    // Player little lantern light
+    // Player hanging mini-lantern light (scales with carried motes & Wind Charm)
     float pDist = length(uPlayerPos + vec3(0.0, 1.2, 0.0) - vFragPos);
-    float pAtten = 1.0 / (1.0 + 0.28 * pDist + 0.08 * pDist * pDist);
-    vec3 pLight = vec3(1.0, 0.78, 0.35) * pAtten * 1.15;
+    float pAtten = 1.0 / (1.0 + 0.24 * pDist + 0.06 * pDist * pDist);
+    vec3 pLight = vec3(1.0, 0.78, 0.35) * pAtten * uPlayerGlowStrength;
+
+    // Active Pulse (Tỏa Sáng) illumination burst
+    float pulseDist = length(uPulsePos + vec3(0.0, 0.8, 0.0) - vFragPos);
+    float pulseAtten = 1.0 / (1.0 + 0.12 * pulseDist * pulseDist);
+    vec3 pulseLight = vec3(1.0, 0.85, 0.38) * pulseAtten * uPulseStrength;
 
     // Up to 7 Big Lanterns
     vec3 lanternTotal = vec3(0.0);
@@ -62,13 +70,13 @@ const FS_SOURCE = `
       if (i >= uLanternCount) break;
       float isLit = uLanternLit[i];
       float lDist = length(uLanternLights[i] + vec3(0.0, 2.2, 0.0) - vFragPos);
-      float intensity = mix(0.25, 2.8, isLit);
+      float intensity = mix(0.22, 2.85, isLit);
       float atten = intensity / (1.0 + 0.08 * lDist + 0.02 * lDist * lDist);
       vec3 lColor = mix(vec3(0.45, 0.48, 0.55), vec3(1.0, 0.76, 0.30), isLit);
       lanternTotal += lColor * atten;
     }
 
-    vec3 litColor = ambient + diffuse + (pLight + lanternTotal) * vColor;
+    vec3 litColor = ambient + diffuse + (pLight + pulseLight + lanternTotal) * vColor;
     vec3 finalColor = mix(litColor, vColor * 1.15, uUnlitEmissive);
 
     // Fog from #1B2350
@@ -98,6 +106,8 @@ export class WebGLRenderer {
     if (!this.gl) return;
 
     this.pulseWaves = [];
+    this.particles = [];
+    this.dashTrails = [];
     this.initProgram();
     this.initMeshes();
 
@@ -107,6 +117,45 @@ export class WebGLRenderer {
 
   triggerPulseWave(pos) {
     this.pulseWaves.push({ pos: [...pos], age: 0, maxAge: 0.45 });
+    this.spawnBurst([pos[0], pos[1] + 0.8, pos[2]], PALETTE.lanternCore, 16, 4.5, 1.8);
+  }
+
+  spawnBurst(pos, color, count = 10, speed = 2.5, lift = 2.0) {
+    for (let i = 0; i < count; i++) {
+      if (this.particles.length >= 120) this.particles.shift();
+      const ang = (i * Math.PI * 2) / count + Math.random() * 0.4;
+      const spd = speed * (0.6 + Math.random() * 0.6);
+      this.particles.push({
+        pos: [pos[0], pos[1] + 0.6, pos[2]],
+        vel: [Math.cos(ang) * spd, lift * (0.6 + Math.random() * 0.6), Math.sin(ang) * spd],
+        color,
+        size: 0.16 + Math.random() * 0.12,
+        age: 0,
+        maxAge: 0.45 + Math.random() * 0.25
+      });
+    }
+  }
+
+  spawnStream(fromPos, toPos, color, count = 10) {
+    for (let i = 0; i < count; i++) {
+      if (this.particles.length >= 120) this.particles.shift();
+      const t = 0.35 + (i / count) * 0.3;
+      const dx = toPos[0] - fromPos[0];
+      const dy = (toPos[1] + 2.2) - (fromPos[1] + 1.0);
+      const dz = toPos[2] - fromPos[2];
+      this.particles.push({
+        pos: [
+          fromPos[0] + (Math.random() - 0.5) * 0.4,
+          fromPos[1] + 1.0 + (Math.random() - 0.5) * 0.3,
+          fromPos[2] + (Math.random() - 0.5) * 0.4
+        ],
+        vel: [dx / t, dy / t + 1.5, dz / t],
+        color,
+        size: 0.18,
+        age: 0,
+        maxAge: t
+      });
+    }
   }
 
   initProgram() {
@@ -134,6 +183,9 @@ export class WebGLRenderer {
       lanternLit: gl.getUniformLocation(this.program, 'uLanternLit'),
       lanternCount: gl.getUniformLocation(this.program, 'uLanternCount'),
       playerPos: gl.getUniformLocation(this.program, 'uPlayerPos'),
+      playerGlowStrength: gl.getUniformLocation(this.program, 'uPlayerGlowStrength'),
+      pulsePos: gl.getUniformLocation(this.program, 'uPulsePos'),
+      pulseStrength: gl.getUniformLocation(this.program, 'uPulseStrength'),
       ambientIntensity: gl.getUniformLocation(this.program, 'uAmbientIntensity'),
       fogColor: gl.getUniformLocation(this.program, 'uFogColor'),
       unlitEmissive: gl.getUniformLocation(this.program, 'uUnlitEmissive')
@@ -392,6 +444,9 @@ export class WebGLRenderer {
     const totalLanterns = Math.max(1, engine.lanterns.length);
     const ambientIntensity = 0.15 + 0.55 * (litCount / totalLanterns);
 
+    const activeDt = engine.state === 'paused' ? 0 : dtSec;
+    const timeSec = engine.simTick / 60.0;
+
     const lPosArray = new Float32Array(21);
     const lLitArray = new Float32Array(7);
     const count = Math.min(7, engine.lanterns.length);
@@ -400,17 +455,32 @@ export class WebGLRenderer {
       lPosArray[i * 3] = l.pos[0];
       lPosArray[i * 3 + 1] = l.pos[1];
       lPosArray[i * 3 + 2] = l.pos[2];
-      lLitArray[i] = l.lit ? 1.0 : 0.0;
+      if (l.lit) {
+        const fuelRatio = Math.max(0, Math.min(1, l.fuelUnits / 6000));
+        const isLow = l.fuelUnits < 1800;
+        const blinkOn = !isLow || Math.floor(timeSec * 2.0) % 2 === 0;
+        lLitArray[i] = blinkOn ? 0.35 + 0.65 * fuelRatio : 0.15;
+      } else {
+        lLitArray[i] = 0.0;
+      }
     }
+
+    const cap = Math.max(1, engine.getCarryCapacity ? engine.getCarryCapacity() : 10);
+    const carryFrac = Math.min(1, engine.player.carried / cap);
+    const playerGlow = 1.0 + 0.85 * carryFrac + (engine.player.charmTicks > 0 ? 0.65 : 0.0);
+    const latestPulse = this.pulseWaves.length > 0 ? this.pulseWaves[this.pulseWaves.length - 1] : null;
+    const pulseStrength = latestPulse ? Math.max(0, 1.0 - latestPulse.age / latestPulse.maxAge) * 2.8 : 0.0;
+    const pulsePos = latestPulse ? latestPulse.pos : engine.player.pos;
 
     gl.uniform3fv(this.uniforms.lanternLights, lPosArray);
     gl.uniform1fv(this.uniforms.lanternLit, lLitArray);
     gl.uniform1i(this.uniforms.lanternCount, count);
     gl.uniform3fv(this.uniforms.playerPos, new Float32Array(engine.player.pos));
+    gl.uniform1f(this.uniforms.playerGlowStrength, playerGlow);
+    gl.uniform3fv(this.uniforms.pulsePos, new Float32Array(pulsePos));
+    gl.uniform1f(this.uniforms.pulseStrength, pulseStrength);
     gl.uniform1f(this.uniforms.ambientIntensity, ambientIntensity);
     gl.uniform3fv(this.uniforms.fogColor, PALETTE.fog);
-
-    const timeSec = engine.simTick / 60.0;
 
     // 0. Sea of Clouds (#12384A) + Drifting Cloud Banks + Starry Night Sky
     const cloudMat = new Mat4().translate(30, -14.5, 0).scale(240, 0.5, 240);
@@ -555,18 +625,39 @@ export class WebGLRenderer {
       this.drawMesh(this.meshes.cube, new Mat4().translate(cx, cy, cz).rotateY(timeSec * 2.5).scale(0.4, 0.65, 0.18), PALETTE.mayScarf, 0.5);
     }
 
-    // 5. Render Ink Shadows (Body #120A1A, Rim #7A3CFF or #00B3FF in colorblind mode, Stunned #3A3450)
+    // 5. Render Ink Shadows + Creative Variant ("Bóng Mực Tinh Anh" on even IDs) + Drain Siphon Beam
     const shadeRimColor = colorblind ? PALETTE.shadeRimColorblind : PALETTE.shadeRim;
     for (const shade of engine.shades) {
       const sx = shade.pos[0], sy = shade.pos[1], sz = shade.pos[2];
       const isStunned = shade.state === 'stunned';
       const isSpawning = shade.state === 'spawning';
       const isDraining = shade.state === 'drain';
-      const hover = isStunned ? -0.15 : Math.sin(timeSec * 4.0 + sx) * 0.1;
-      const sc = isStunned ? [1.3, 0.55, 1.3] : isSpawning ? [0.6, 0.6, 0.6] : [1.05, 1.35, 1.05];
+      const isRecoil = shade.state === 'recoil';
+      const idMatch = String(shade.id).match(/(\d+)$/);
+      const isElderVariant = idMatch ? parseInt(idMatch[1], 10) % 2 === 0 : false;
+
+      const hover = isStunned ? -0.15 : isSpawning ? -0.35 : Math.sin(timeSec * 4.0 + sx) * 0.1;
+      const sc = isStunned
+        ? [1.3, 0.55, 1.3]
+        : isSpawning
+          ? [0.6, 0.6, 0.6]
+          : isRecoil
+            ? [0.9, 1.15, 0.9]
+            : isElderVariant
+              ? [1.15, 1.45, 1.15]
+              : [1.05, 1.35, 1.05];
       const bodyCol = isStunned ? PALETTE.shadeStun : PALETTE.shadeBody;
       this.drawMesh(this.meshes.sphere, new Mat4().translate(sx, sy + hover, sz).scale(sc[0], sc[1], sc[2]), bodyCol, isStunned ? 0.25 : 0.05);
       this.drawMesh(this.meshes.ring, new Mat4().translate(sx, sy - 0.65, sz).scale(isDraining ? 1.15 : 0.85, 1, isDraining ? 1.15 : 0.85), shadeRimColor, 0.85);
+
+      // Creative Variant: Bóng Mực Tinh Anh (twin curved ink horns + elevated halo ring)
+      if (isElderVariant && !isStunned) {
+        const hornY = sy + hover + 0.68;
+        this.drawMesh(this.meshes.cone, new Mat4().translate(sx - 0.28, hornY, sz).scale(0.18, 0.55, 0.18), PALETTE.shadeBody, 0.1);
+        this.drawMesh(this.meshes.cone, new Mat4().translate(sx + 0.28, hornY, sz).scale(0.18, 0.55, 0.18), PALETTE.shadeBody, 0.1);
+        this.drawMesh(this.meshes.ring, new Mat4().translate(sx, sy + hover + 0.25, sz).rotateY(-timeSec * 2.5).scale(0.95, 1, 0.95), shadeRimColor, 0.8);
+      }
+
       // Orbiting ink wisps or dizzy stun stars
       for (let w = 0; w < 3; w++) {
         const wa = timeSec * (isStunned ? 5.5 : isDraining ? 6.0 : 3.0) + (w * Math.PI * 2) / 3;
@@ -575,38 +666,92 @@ export class WebGLRenderer {
         const wCol = isStunned ? PALETTE.goldUi : (isDraining ? shadeRimColor : PALETTE.shadeBody);
         this.drawMesh(this.meshes.sphere, new Mat4().translate(sx + Math.cos(wa) * wr, wy, sz + Math.sin(wa) * wr).scale(0.22, 0.22, 0.22), wCol, isStunned || isDraining ? 0.85 : 0.1);
       }
+
+      // Drain Siphon Beam: pulsing orbs flowing from target low-fuel lantern to draining Shade
+      if (isDraining && shade.targetLanternId) {
+        const targetL = engine.lanterns.find(l => l.id === shade.targetLanternId);
+        if (targetL) {
+          for (let b = 0; b < 4; b++) {
+            const bt = (timeSec * 1.8 + b * 0.25) % 1.0;
+            const bx = targetL.pos[0] + (sx - targetL.pos[0]) * bt;
+            const by = (targetL.pos[1] + 2.2) + (sy + hover - (targetL.pos[1] + 2.2)) * bt;
+            const bz = targetL.pos[2] + (sz - targetL.pos[2]) * bt;
+            this.drawMesh(this.meshes.sphere, new Mat4().translate(bx, by, bz).scale(0.22, 0.22, 0.22), shadeRimColor, 0.95);
+          }
+        }
+      }
+
       // Eyes facing player
       const sYaw = Math.atan2(engine.player.pos[0] - sx, engine.player.pos[2] - sz);
-      const ex = sx + Math.sin(sYaw) * 0.42;
-      const ez = sz + Math.cos(sYaw) * 0.42;
-      this.drawMesh(this.meshes.cube, new Mat4().translate(ex, sy + hover + 0.2, ez).rotateY(sYaw).scale(0.32, 0.1, 0.1), shadeRimColor, 0.95);
+      const ex = sx + Math.sin(sYaw) * 0.44;
+      const ez = sz + Math.cos(sYaw) * 0.44;
+      this.drawMesh(this.meshes.cube, new Mat4().translate(ex, sy + hover + 0.2, ez).rotateY(sYaw).scale(0.34, 0.1, 0.1), shadeRimColor, 0.95);
     }
 
-    // 6. Render Drifters (Gió Lạc #8FA3B8)
+    // 6. Render Drifters (Gió Lạc #8FA3B8) with 3-segment undulating silk ribbon trail
     for (const drifter of engine.drifters) {
       if (drifter.state === 'removed') continue;
       const dx = drifter.pos[0], dy = drifter.pos[1] + Math.sin(timeSec * 5.0) * 0.2, dz = drifter.pos[2];
       this.drawMesh(
         this.meshes.cube,
-        new Mat4().translate(dx, dy, dz).rotateY(timeSec * 4.0).scale(1.5, 0.16, 0.45),
+        new Mat4().translate(dx, dy, dz).rotateY(timeSec * 4.0).scale(1.3, 0.16, 0.42),
         PALETTE.drifter,
-        0.55
+        0.65
       );
+      for (let t = 1; t <= 3; t++) {
+        const ta = timeSec * 4.0 - t * 0.55;
+        const tx = dx - Math.cos(ta) * t * 0.35;
+        const tz = dz - Math.sin(ta) * t * 0.35;
+        const ty = dy + Math.sin(timeSec * 6.0 - t) * 0.12;
+        this.drawMesh(this.meshes.cube, new Mat4().translate(tx, ty, tz).rotateY(ta).scale(0.55 - t * 0.1, 0.12, 0.3 - t * 0.05), PALETTE.drifter, 0.45);
+      }
       if (drifter.stolen > 0) {
         this.drawMesh(this.meshes.sphere, new Mat4().translate(dx, dy + 0.35, dz).scale(0.32, 0.32, 0.32), PALETTE.moteCore, 0.9);
       }
     }
 
-    // 7. Render Pulse Shockwaves
+    // 7. Render Pulse Shockwaves, Burst Particles & Dash Trails (freeze while paused!)
     for (let i = this.pulseWaves.length - 1; i >= 0; i--) {
       const w = this.pulseWaves[i];
-      w.age += dtSec;
+      w.age += activeDt;
       if (w.age >= w.maxAge) {
         this.pulseWaves.splice(i, 1);
         continue;
       }
       const r = 0.6 + (w.age / w.maxAge) * 5.0;
       this.drawMesh(this.meshes.ring, new Mat4().translate(w.pos[0], w.pos[1] + 0.2, w.pos[2]).scale(r, 1, r), PALETTE.lanternCore, 0.95);
+    }
+
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const p = this.particles[i];
+      p.age += activeDt;
+      if (p.age >= p.maxAge) {
+        this.particles.splice(i, 1);
+        continue;
+      }
+      if (activeDt > 0) {
+        p.pos[0] += p.vel[0] * activeDt;
+        p.pos[1] += p.vel[1] * activeDt;
+        p.pos[2] += p.vel[2] * activeDt;
+        p.vel[1] -= 4.0 * activeDt;
+      }
+      const s = p.size * (1.0 - 0.6 * (p.age / p.maxAge));
+      this.drawMesh(this.meshes.sphere, new Mat4().translate(p.pos[0], p.pos[1], p.pos[2]).scale(s, s, s), p.color, 0.95);
+    }
+
+    if (activeDt > 0 && engine.player.dashTicks > 0 && engine.player.respawnTicks === 0) {
+      if (this.dashTrails.length >= 10) this.dashTrails.shift();
+      this.dashTrails.push({ pos: [...engine.player.pos], age: 0, maxAge: 0.25 });
+    }
+    for (let i = this.dashTrails.length - 1; i >= 0; i--) {
+      const tr = this.dashTrails[i];
+      tr.age += activeDt;
+      if (tr.age >= tr.maxAge) {
+        this.dashTrails.splice(i, 1);
+        continue;
+      }
+      const k = 1.0 - tr.age / tr.maxAge;
+      this.drawMesh(this.meshes.cylinder, new Mat4().translate(tr.pos[0], tr.pos[1] + 0.72, tr.pos[2]).scale(0.45 * k, 0.95 * k, 0.45 * k), PALETTE.lanternCore, 0.75);
     }
 
     // 8. Wind Leaves Visuals on Night 3
@@ -622,33 +767,87 @@ export class WebGLRenderer {
       }
     }
 
-    // 9. Render May (Young Lantern Keeper with Nón Lá, Flowing Scarf & Hanging Mini Lantern)
+    // 9. Creative Side Character: Ông Đăng (Elder Lantern Keeper NPC near spawn hub)
+    {
+      const ox = 2.8, oz = engine.night === 3 ? -14.5 : -2.5;
+      const oy = 0;
+      const nod = Math.sin(timeSec * 2.0) * 0.05;
+      const distToMay = Math.hypot(engine.player.pos[0] - ox, engine.player.pos[2] - oz);
+      const staffRaise = distToMay < 5.0 ? 0.25 + 0.1 * Math.sin(timeSec * 5.0) : 0;
+      // Sage Robe & White Beard
+      this.drawMesh(this.meshes.cylinder, new Mat4().translate(ox, oy + 0.82, oz).scale(0.58, 1.15, 0.58), PALETTE.wood);
+      this.drawMesh(this.meshes.sphere, new Mat4().translate(ox, oy + 1.58 + nod, oz).scale(0.42, 0.42, 0.42), [0.92, 0.78, 0.68]);
+      this.drawMesh(this.meshes.cone, new Mat4().translate(ox, oy + 1.38 + nod, oz + 0.18).scale(0.24, -0.36, 0.18), PALETTE.mayRobe);
+      this.drawMesh(this.meshes.cone, new Mat4().translate(ox, oy + 1.88 + nod, oz).scale(1.1, 0.44, 1.1), PALETTE.sand);
+      // Bamboo Staff with hanging Gourd Lantern
+      this.drawMesh(this.meshes.cylinder, new Mat4().translate(ox - 0.55, oy + 1.05 + staffRaise, oz + 0.2).scale(0.08, 2.1, 0.08), PALETTE.wood);
+      this.drawMesh(this.meshes.sphere, new Mat4().translate(ox - 0.55, oy + 2.15 + staffRaise, oz + 0.2).scale(0.28, 0.34, 0.28), PALETTE.lanternLit, 0.9);
+      if (distToMay < 5.0) {
+        this.drawMesh(this.meshes.ring, new Mat4().translate(ox, oy + 0.05, oz).scale(1.1, 1, 1.1), PALETTE.goldUi, 0.6);
+      }
+    }
+
+    // 10. Render Hero Mây + Creative Spirit Guide "Đốm Tiên"
     if (engine.player.respawnTicks === 0) {
       const invulnVisible = engine.player.invulnTicks === 0 || Math.floor(engine.player.invulnTicks / 4) % 2 === 0;
       if (invulnVisible) {
         const px = engine.player.pos[0], py = engine.player.pos[1], pz = engine.player.pos[2];
         const yaw = Math.atan2(engine.player.facing[0], engine.player.facing[1]);
         const speed = Math.hypot(engine.player.vel[0], engine.player.vel[2]);
-        const walkBob = speed > 0.2 && engine.player.grounded ? Math.abs(Math.sin(timeSec * 14.0)) * 0.08 : 0;
+        const moving = speed > 0.2 && engine.player.grounded;
+        const walkPhase = timeSec * 14.0;
+        const walkBob = moving ? Math.abs(Math.sin(walkPhase)) * 0.08 : 0;
+        const stride = moving ? Math.sin(walkPhase) * 0.22 : 0;
+
+        // Animated feet
+        const fx = Math.sin(yaw), fz = Math.cos(yaw);
+        const rx = fz, rz = -fx;
+        this.drawMesh(this.meshes.sphere, new Mat4().translate(px + rx * 0.14 + fx * stride, py + 0.14, pz + rz * 0.14 + fz * stride).scale(0.2, 0.18, 0.26), PALETTE.wood);
+        this.drawMesh(this.meshes.sphere, new Mat4().translate(px - rx * 0.14 - fx * stride, py + 0.14, pz - rz * 0.14 - fz * stride).scale(0.2, 0.18, 0.26), PALETTE.wood);
 
         // Cream Robe (#E8E2D0)
         this.drawMesh(this.meshes.cylinder, new Mat4().translate(px, py + 0.72 + walkBob, pz).scale(0.52, 1.0, 0.52), PALETTE.mayRobe);
-        // Crimson Scarf Collar & Trailing Ribbon (#C8102E)
+        // Crimson Scarf Collar & 2-Segment Flowing Tail (#C8102E)
         this.drawMesh(this.meshes.cylinder, new Mat4().translate(px, py + 1.22 + walkBob, pz).scale(0.42, 0.16, 0.42), PALETTE.mayScarf);
-        const tailWave = Math.sin(timeSec * 8.0) * 0.08;
-        const tx = px - Math.sin(yaw) * 0.36 + Math.cos(yaw) * tailWave;
-        const tz = pz - Math.cos(yaw) * 0.36 - Math.sin(yaw) * tailWave;
-        this.drawMesh(this.meshes.cube, new Mat4().translate(tx, py + 1.08 + walkBob, tz).rotateY(yaw).scale(0.18, 0.38, 0.08), PALETTE.mayScarf);
-        // Head
+        const tailWave = Math.sin(timeSec * (moving ? 12.0 : 5.0)) * (moving ? 0.14 : 0.06);
+        const tx1 = px - fx * 0.34 + rx * tailWave;
+        const tz1 = pz - fz * 0.34 + rz * tailWave;
+        this.drawMesh(this.meshes.cube, new Mat4().translate(tx1, py + 1.12 + walkBob, tz1).rotateY(yaw).scale(0.18, 0.28, 0.08), PALETTE.mayScarf);
+        const tx2 = px - fx * (0.44 + (moving ? 0.12 : 0.0)) + rx * tailWave * 1.7;
+        const tz2 = pz - fz * (0.44 + (moving ? 0.12 : 0.0)) + rz * tailWave * 1.7;
+        this.drawMesh(this.meshes.cube, new Mat4().translate(tx2, py + 0.92 + walkBob, tz2).rotateY(yaw).scale(0.15, 0.22, 0.07), PALETTE.mayScarf);
+
+        // Head & Conical Hat (Nón lá)
         this.drawMesh(this.meshes.sphere, new Mat4().translate(px, py + 1.46 + walkBob, pz).scale(0.44, 0.44, 0.44), [0.92, 0.78, 0.68]);
-        // Conical Hat (Nón lá)
         this.drawMesh(this.meshes.cone, new Mat4().translate(px, py + 1.80 + walkBob, pz).scale(1.18, 0.48, 1.18), PALETTE.sand);
-        // Hanging mini lantern from hat brim
+
+        // Hanging mini-lantern (glow & halo scale with carried/capacity)
         const sway = Math.sin(timeSec * 6.0) * 0.06;
         const lx = px + Math.sin(yaw + 0.75) * 0.6 + sway;
         const lz = pz + Math.cos(yaw + 0.75) * 0.6;
-        this.drawMesh(this.meshes.cube, new Mat4().translate(lx, py + 1.38 + walkBob, lz).scale(0.22, 0.28, 0.22), PALETTE.lanternLit, 0.95);
-        this.drawMesh(this.meshes.sphere, new Mat4().translate(lx, py + 1.38 + walkBob, lz).scale(0.14, 0.14, 0.14), PALETTE.lanternCore, 1.0);
+        const lanternScale = 1.0 + 0.35 * carryFrac;
+        this.drawMesh(this.meshes.cube, new Mat4().translate(lx, py + 1.38 + walkBob, lz).scale(0.22 * lanternScale, 0.28 * lanternScale, 0.22 * lanternScale), PALETTE.lanternLit, 0.95);
+        this.drawMesh(this.meshes.sphere, new Mat4().translate(lx, py + 1.38 + walkBob, lz).scale(0.16 * lanternScale, 0.16 * lanternScale, 0.16 * lanternScale), PALETTE.lanternCore, 1.0);
+
+        // Wind Charm foot aura
+        if (engine.player.charmTicks > 0) {
+          this.drawMesh(this.meshes.ring, new Mat4().translate(px, py + 0.08, pz).rotateY(timeSec * 4.0).scale(1.05, 1, 1.05), PALETTE.mayScarf, 0.85);
+          this.drawMesh(this.meshes.ring, new Mat4().translate(px, py + 0.12, pz).rotateY(-timeSec * 4.0).scale(1.22, 1, 1.22), PALETTE.goldUi, 0.85);
+        }
+
+        // Creative Spirit Guide "Đốm Tiên" orbiting Mây & leaning toward nearest urgent lantern
+        const urgentLanterns = engine.lanterns.filter(l => !l.lit || l.fuelUnits < 1800);
+        let guideAngle = timeSec * 2.4;
+        if (urgentLanterns.length > 0) {
+          urgentLanterns.sort((a, b) => Math.hypot(a.pos[0] - px, a.pos[2] - pz) - Math.hypot(b.pos[0] - px, b.pos[2] - pz));
+          const u = urgentLanterns[0];
+          guideAngle = Math.atan2(u.pos[2] - pz, u.pos[0] - px) + Math.sin(timeSec * 3.0) * 0.35;
+        }
+        const gx = px + Math.cos(guideAngle) * 1.15;
+        const gz = pz + Math.sin(guideAngle) * 1.15;
+        const gy = py + 1.65 + Math.sin(timeSec * 4.5) * 0.18;
+        this.drawMesh(this.meshes.sphere, new Mat4().translate(gx, gy, gz).scale(0.22, 0.22, 0.22), PALETTE.moteCore, 0.98);
+        this.drawMesh(this.meshes.cube, new Mat4().translate(gx, gy + 0.08, gz).rotateY(timeSec * 6.0).scale(0.48, 0.06, 0.12), PALETTE.lanternCore, 0.85);
       }
     }
   }

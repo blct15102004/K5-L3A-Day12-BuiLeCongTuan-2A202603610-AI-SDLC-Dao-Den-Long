@@ -59,10 +59,12 @@ Supported flags:
 
 ## 6. My Creative Additions (Sáng tạo của tôi)
 
-1. Character styling: Mây wears a traditional conical hat (nón lá) with a swaying mini lantern and crimson scarf (`#C8102E`) over cream robe (`#E8E2D0`).
-2. Procedural Web Audio API soundscape & BGM: pentatonic night ambience loop plus synthesized chimes, gongs, wind warnings, countdown ticks, jump, dash, and pulse SFX with zero external audio assets.
-3. Visual VFX & HUD aids: expanding golden pulse shockwave rings, spinning Wind Charm talismans, blowing wind leaves on Night 3, and a dynamic off-screen arrow pointing to the nearest unlit lantern.
-4. Strict core/render isolation: all visual and audio code lives in `src/render/` and `index.html`, never touching `src/core/` or altering headless Test Contract v1.1 outputs.
+1. **Hero Character & Reactive Mini-Lantern (Mây)**: Mây wears a traditional conical hat (*nón lá*), cream robe (`#E8E2D0`), animated stride, 2-segment flowing red scarf (`#C8102E`), dash light afterimages, and a hanging mini lantern whose glow dynamically scales with `carried / capacity` and active Wind Charm.
+2. **Side Characters — Ông Đăng & Đốm Tiên**: Elder keeper **Ông Đăng** stands near each island's starting hub with his gourd-lantern staff reacting when Mây approaches, while spirit companion **Đốm Tiên** orbits Mây and subtly leans toward the nearest unlit or low-fuel (`< 30`) lantern.
+3. **Visual Variant — Bóng Mực Tinh Anh & Drain Beam**: Even-numbered Ink Shadows (`S2, S4...`) appear as crowned Ink Elders with twin horns and counter-rotating rim halos; draining Shadows display an animated fuel-siphon beam from the target lantern.
+4. **Event-Driven Particle VFX & Accessibility**: Reactive bursts and light streams on mote pickup, deposit, refuel, lantern light/relight, blowout, hit, and Pulse (`Tỏa Sáng`), plus full Colorblind Mode (`#00B3FF` Ink Shadows, `#FFFFFF` `⚠` alerts, 20% squashed/torn unlit lanterns).
+5. **Procedural Web Audio API Soundscape & BGM**: Pentatonic night ambience loop plus synthesized chimes, gongs, wind warnings, countdown ticks, jump, dash, and pulse SFX with zero external audio assets.
+6. **Strict Core/Render Isolation**: All creative visuals, side characters, VFX particles, and audio live strictly in `src/render/` and freeze cleanly when paused, never touching `src/core/` or altering headless Test Contract v1.2 outputs.
 
 ## 7. Project Documentation & Harness
 

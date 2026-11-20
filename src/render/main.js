@@ -1,4 +1,5 @@
 import { GameEngine, distXZ } from '../core/game.js';
+import { PALETTE } from '../core/constants.js';
 import { getNightConfig } from '../core/maps.js';
 import { WebGLRenderer } from './webgl-renderer.js';
 import { SoundEffects } from './audio.js';
@@ -456,17 +457,31 @@ function loop(now) {
         }
 
         for (const evt of events) {
-          if (evt.name === 'mote_picked') audio.playMotePickup();
-          else if (evt.name === 'charm_picked') audio.playCharmPickup();
-          else if (evt.name === 'deposit' || evt.name === 'refuel') audio.playDeposit();
-          else if (evt.name === 'lantern_lit') audio.playLanternLit();
-          else if (evt.name === 'lantern_out') audio.playLanternOut();
-          else if (evt.name === 'pulse') {
+          if (evt.name === 'mote_picked') {
+            audio.playMotePickup();
+            renderer.spawnBurst(engine.player.pos, PALETTE.moteCore, 8, 2.2, 1.8);
+          } else if (evt.name === 'charm_picked') {
+            audio.playCharmPickup();
+            renderer.spawnBurst(engine.player.pos, PALETTE.goldUi, 14, 3.0, 2.4);
+          } else if (evt.name === 'deposit' || evt.name === 'refuel') {
+            audio.playDeposit();
+            const l = engine.lanterns.find(x => x.id === evt.data.lantern_id);
+            if (l) renderer.spawnStream(engine.player.pos, l.pos, PALETTE.lanternLit, 10);
+          } else if (evt.name === 'lantern_lit') {
+            audio.playLanternLit();
+            const l = engine.lanterns.find(x => x.id === evt.data.lantern_id);
+            if (l) renderer.spawnBurst([l.pos[0], l.pos[1] + 2.4, l.pos[2]], PALETTE.lanternCore, 20, 3.8, 3.2);
+          } else if (evt.name === 'lantern_out') {
+            audio.playLanternOut();
+            const l = engine.lanterns.find(x => x.id === evt.data.lantern_id);
+            if (l) renderer.spawnBurst([l.pos[0], l.pos[1] + 2.2, l.pos[2]], PALETTE.lanternOff, 14, 2.4, 1.5);
+          } else if (evt.name === 'pulse') {
             audio.playPulse();
             renderer.triggerPulseWave(engine.player.pos);
-          }
-          else if (evt.name === 'player_hit') audio.playPlayerHit();
-          else if (evt.name === 'dash') audio.playDash();
+          } else if (evt.name === 'player_hit') {
+            audio.playPlayerHit();
+            renderer.spawnBurst(engine.player.pos, PALETTE.lanternCore, 12, 3.2, 1.2);
+          } else if (evt.name === 'dash') audio.playDash();
           else if (evt.name === 'shade_spawned') audio.playShadeSpawn();
         }
 
