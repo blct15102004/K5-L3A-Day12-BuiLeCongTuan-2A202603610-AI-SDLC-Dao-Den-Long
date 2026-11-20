@@ -1,78 +1,113 @@
-# Dao Den Long — 3D Third-Person Game & AI SDLC
+# Đảo Đèn Lồng (Lantern Island) — v1.0.0
 
-Video demo: [docs/demo/demo.mp4](docs/demo/demo.mp4) (attached at Phase 4)
+**Đảo Đèn Lồng** là tựa game hành động 3D góc nhìn thứ ba kết hợp engine mô phỏng tất định 60 Hz (`Test Contract v1.3`) qua 3 Đêm chơi: **Đảo Bến**, **Đảo Cau** và **Đảo Chuông**.
 
-## 1. Quick Start (<= 3 commands)
+Video demo: [docs/demo/demo.mp4](docs/demo/demo.mp4)
+
+---
+
+## 1. System Requirements
+
+- **Runtime**: Node.js `>= 18` (ES Modules, zero external npm dependencies).
+- **Browser**: Trình duyệt hỗ trợ WebGL 1.0 & Web Audio API (Google Chrome, Microsoft Edge, Firefox hoặc Safari hiện đại). Để chạy benchmark tự động qua `bench_cmd`, cần Google Chrome / Chromium / Microsoft Edge.
+- **OS**: Windows 10/11, macOS, hoặc Linux.
+
+---
+
+## 2. Quick Start (`<= 3` commands)
 
 ```bash
-# 1. Install / verify setup
+# 1. Cài đặt / kiểm tra môi trường
 npm install
 
-# 2. Run automated test suite (19 tests + 21,600-tick benchmark)
+# 2. Chạy toàn bộ 28 kiểm thử tự động & contract v1.3
 npm test
 
-# 3. Start 3D game server
+# 3. Khởi động game server 3D + API Bảng Xếp Hạng
 npm start
 ```
-After starting the server, open `http://127.0.0.1:3000` (or `http://localhost:3000`) in your web browser.
 
-## 2. Game Overview (Ba Hòn Đảo — Contract v1.2)
+Sau khi chạy `npm start` (hoặc `node src/server.js`), mở trình duyệt tại `http://127.0.0.1:3000`.
 
-- **Đêm 1 — Đảo Bến** (`240s`): Round island (`r=40m`), 5 lanterns (need `>= 3/5` lit at dawn).
-- **Đêm 2 — Đảo Cau** (`270s`): Twin islands (`r=28m`) connected by a bamboo bridge and 2 launch pads, 6 lanterns (need `>= 4/6` lit at dawn), Wind Charm (`C1`), and Drifters.
-- **Đêm 3 — Đảo Chuông** (`300s`): 3-tier island (`r=45m`), vertical cliffs, 2 ramps (`30°`, `150°`), Tier-2 launch pad, central Bell Tower, 7 lanterns (need `>= 5/7` lit at dawn), Wind gusts, 2 Wind Charms, and Drifters.
-- **Fuel & Maintenance**: Lit lanterns decay at `1.0/s`; below `30` fuel they blink (`1 Hz`), lose their `6m` safe zone, and wandering Ink Shadows can drain `5/s`. Refuel lit lanterns (`+10` fuel/firefly) or relight extinguished ones (`5` fireflies). Carrying capacity grows `10 + 2 * successful_lights` (max `20`).
-- **Accessibility**: Persistent **High-Contrast / Colorblind Palette** toggle in Settings (`#00B3FF` Ink Shadows, `#FFFFFF` `⚠` alerts, compressed/torn unlit lanterns).
+---
 
-## 3. Controls
+## 3. Game Overview & Scoring (Contract v1.3)
 
-- `W`, `A`, `S`, `D` or Arrow keys: Move character (May) (`6.0 m/s`; `7.2 m/s` with Wind Charm)
-- `Space`: Jump (`7.0 m/s` vertical velocity)
-- `Shift`: Dash (`14.0 m/s` for `0.2s`, cooldown `1.5s`; `0s` with Wind Charm)
-- `E`: Interact / Deposit motes into nearest unlit lantern (`<= 2.0m`)
-- `Q` or `F`: Pulse light (`3` motes, `5.0m` 3D radius, stuns shades `2.0s` & pushes `4.0m`)
-- `Esc` or `P`: Pause / Resume game
-- Mouse click & drag: Rotate camera view
+- **Đêm 1 — Đảo Bến** (`240s`): Đảo tròn (`r = 40 m`), 5 đèn lớn (cần tối thiểu `3/5` đèn sáng lúc bình minh).
+- **Đêm 2 — Đảo Cau** (`270s`): Đảo đôi (`r = 28 m`) nối bằng cầu tre và 2 bệ phóng, 6 đèn lớn (`>= 4/6`), Bùa Gió (`C1`) và Gió Lạc (Drifters).
+- **Đêm 3 — Đảo Chuông** (`300s`): Đảo 3 tầng (`r = 45 m`), vách đá đứng, 2 dốc (`30°`, `150°`), bệ phóng tầng 2, Tháp Chuông trung tâm, 7 đèn lớn (`>= 5/7`), gió giật định kỳ, 2 Bùa Gió và Gió Lạc.
+- **Nhiên liệu & Bảo trì đèn**: Đèn sáng bắt đầu ở `fuel = 100`, giảm `1.0/s`; dưới `30` nhiên liệu đèn nhấp nháy (`1 Hz`), mất vùng an toàn `6 m` và Bóng Mực có thể hút `5 fuel/s` (`drain`). Nạp thêm cho đèn đang sáng (`+10` fuel/đom đóm) hoặc thắp lại đèn đã tắt (`5` đom đóm). Sức chứa đom đóm của Mây tăng dần `10 + 2 * successful_lights` (tối đa `20`).
+- **Tính điểm**:
+  - Nạp đom đóm (thắp mới / thắp lại / tiếp nhiên liệu): **+5 điểm/đom đóm**
+  - Thắp đèn lần đầu: **+100 điểm** · Thắp lại đèn từng tắt: **+40 điểm**
+  - Trúng Bóng Mực bằng Tỏa Sáng: **+5 điểm** (**+15 điểm** nếu Bóng đang ở trạng thái `drain`)
+  - Thưởng qua Đêm (`dawn_survived`): **+50 + floor(fuel)** mỗi đèn còn sáng + **+50** mỗi Ngọn Lửa còn lại.
 
-## 4. Scoring System (Contract v1.2)
+---
 
-- Deposit firefly into a lantern (initial light, relight, or refuel): **+5 points**
-- Initial lantern light: **+100 points** · Relight an extinguished lantern: **+40 points**
-- Hit an Ink Shadow with Pulse: **+5 points** (**+15 points** if it was in `drain` state)
-- Dawn win bonus (`dawn_survived`): **+50 + floor(fuel)** per lit lantern, **+50** per remaining flame
+## 4. Controls & Accessibility
 
-## 5. Headless Execution (Test Contract v1.1)
+### Phím mặc định (có thể đổi toàn bộ trong Cài đặt)
+- `W / A / S / D` hoặc các phím Mũi tên: Di chuyển Mây (`6.0 m/s`; `7.2 m/s` khi có Bùa Gió)
+- `Space`: Nhảy (`7.0 m/s`)
+- `Shift`: Lướt (`14.0 m/s` trong `0.2 s`, hồi chiêu `1.5 s`; `0 s` khi có Bùa Gió)
+- `E`: Nạp đom đóm / Thắp lại / Tiếp nhiên liệu cho đèn gần nhất (`<= 2.0 m`)
+- `Q` hoặc `F`: Tỏa Sáng / Pulse (`3` đom đóm, bán kính 3D `5.0 m`, choáng `2.0 s` & đẩy lùi `4.0 m`)
+- `Esc` hoặc `P`: Tạm dừng / Tiếp tục
+- Kéo chuột / Pointer Lock: Xoay góc nhìn camera
 
-Run the deterministic headless simulator via:
+### Tính năng Trợ năng (Accessibility)
+- **Đổi phím tùy chỉnh**: Hỗ trợ gán lại toàn bộ 9 hành động (`Đi lên/xuống/trái/phải`, `Nhảy`, `Lướt`, `Nạp đèn`, `Tỏa Sáng`, `Tạm dừng`), cảnh báo ngay khi trùng phím và nút Khôi phục mặc định (lưu bền trên `localStorage`).
+- **Phụ đề & Chỉ báo hướng**: Banner phụ đề cho các sự kiện quan trọng (Bóng Mực xuất hiện, cảnh báo gió mạnh, 10 giây cuối, đèn `< 30%`) kèm mũi tên chỉ hướng viền màn hình trong 4 giây khi Bóng Mực vừa sinh ra.
+- **Chế độ Colorblind / High-Contrast**: Đổi viền & mắt Bóng Mực sang `#00B3FF`, cảnh báo `#FFFFFF` có tiền tố `⚠`, và nén khung/rách giấy 20% với đèn chưa thắp.
+- **Giảm chuyển động (Reduced Motion)**: Tắt rung camera, chớp sáng toàn màn hình và hiệu ứng nhấp nháy nhanh.
+- **Chữ lớn (Large Text `×1.25`)**: Phóng to giao diện từ cỡ chữ nền `>= 18 px` (ở `1280×720`) lên `×1.25`.
+
+---
+
+## 5. Headless CLI, Benchmark, Soak & Leaderboard
+
+### Chạy mô phỏng Headless (`Test Contract v1.3`)
 ```bash
 node src/headless/cli.js --seed 42 --night 1 --ticks 600 --out output.jsonl
 ```
+Cờ hỗ trợ: `--seed <int>`, `--night <1|2|3>`, `--scenario <file.json>`, `--inputs <file.json>`, `--ticks <int>`, `--out <file.jsonl>`, `--snapshot-every <int>`.
 
-Supported flags:
-- `--seed <int>`: Random seed for deterministic simulation.
-- `--night <1|2|3>`: Night level index (`1`, `2`, or `3`).
-- `--scenario <file.json>`: Optional scenario configuration.
-- `--inputs <file.json>`: Optional scripted inputs (`move`, `cam_yaw_deg`, `jump`, `dash`, `interact`, `pulse`, `pause`).
-- `--ticks <int>`: Number of ticks to simulate (`60 ticks/s`).
-- `--out <file.jsonl>`: Output JSONL path.
-- `--snapshot-every <int>`: Snapshot frequency (default `10`).
+### Benchmark Mode (3D WebGL Performance)
+```bash
+node src/headless/bench.js --seed 42 --duration 30 --out bench.json
+```
+- Tự động mở cửa sổ Chrome/Edge kích thước `1280×720` (non-fullscreen) với cờ `--disable-gpu-vsync --disable-frame-rate-limit` (trường `vsync_off: true`; trên một số cấu hình trình điều khiển đồ họa buộc VSync ở cấp hệ điều hành/compositor DWM của Windows, tốc độ khung hình vẫn phản ánh phép đo thực tế của trình duyệt ở độ phân giải này).
+- Tải Đêm 1 với đèn L1–L3 sáng (`fuel: 100`), 200 Bóng Mực (`wander`), 100 đom đóm, tắt các hiệu ứng sáng tạo ngoài chuẩn; camera quay quanh `(0,0,0)` ở bán kính `30 m`, cao độ `Y = 15 m` (1 vòng / 15 giây), 3s warm-up + 30s đo thực tế và xuất [bench.json](bench.json).
 
-## 6. My Creative Additions (Sáng tạo của tôi)
+### Soak Test (Headless Stability)
+```bash
+node src/headless/soak.js --seed 7 --nights 10 --out soak.json
+```
+- Chạy liên tiếp 10 Đêm xoay vòng `1 -> 2 -> 3` với `seed = 7 + i`, input ngẫu nhiên theo seed, kiểm tra `crashes == 0` và `mem_end_mb <= 1.2 * mem_start_mb`, xuất [soak.json](soak.json).
 
-1. **Hero Character & Reactive Mini-Lantern (Mây)**: Mây wears a traditional conical hat (*nón lá*), cream robe (`#E8E2D0`), animated stride, 2-segment flowing red scarf (`#C8102E`), dash light afterimages, and a hanging mini lantern whose glow dynamically scales with `carried / capacity` and active Wind Charm.
-2. **Side Characters — Ông Đăng & Đốm Tiên**: Elder keeper **Ông Đăng** stands near each island's starting hub with his gourd-lantern staff reacting when Mây approaches, while spirit companion **Đốm Tiên** orbits Mây and subtly leans toward the nearest unlit or low-fuel (`< 30`) lantern.
-3. **Visual Variant — Bóng Mực Tinh Anh & Drain Beam**: Even-numbered Ink Shadows (`S2, S4...`) appear as crowned Ink Elders with twin horns and counter-rotating rim halos; draining Shadows display an animated fuel-siphon beam from the target lantern.
-4. **Event-Driven Particle VFX & Accessibility**: Reactive bursts and light streams on mote pickup, deposit, refuel, lantern light/relight, blowout, hit, and Pulse (`Tỏa Sáng`), plus full Colorblind Mode (`#00B3FF` Ink Shadows, `#FFFFFF` `⚠` alerts, 20% squashed/torn unlit lanterns).
-5. **Procedural Web Audio API Soundscape & BGM**: Pentatonic night ambience loop plus synthesized chimes, gongs, wind warnings, countdown ticks, jump, dash, and pulse SFX with zero external audio assets.
-6. **Strict Core/Render Isolation**: All creative visuals, side characters, VFX particles, and audio live strictly in `src/render/` and freeze cleanly when paused, never touching `src/core/` or altering headless Test Contract v1.2 outputs.
+### Local Leaderboard CLI Export
+```bash
+node src/server.js --export-leaderboard out.json
+```
+Xuất Top 10 kỷ lục từ `data/leaderboard.json` theo cấu trúc `{"entries": [...]}` (sắp xếp theo `score` giảm dần, hòa điểm ưu tiên `achieved_at` sớm hơn).
 
-## 7. Project Documentation & Harness
+---
 
-- [AGENTS.md](AGENTS.md): AI harness and architectural compliance rules.
-- [.agents/skills/verify-phase/SKILL.md](.agents/skills/verify-phase/SKILL.md): Pre-tag verification skill.
-- [docs/notes/phase-1-spec-assumptions.md](docs/notes/phase-1-spec-assumptions.md): Phase 1 specs and assumptions.
-- [docs/notes/phase-2-spec-assumptions.md](docs/notes/phase-2-spec-assumptions.md) & [docs/notes/phase-3-spec-assumptions.md](docs/notes/phase-3-spec-assumptions.md): Phase 2 & 3 specs and assumptions.
-- [docs/notes/adr-001-lantern-fuel-and-dawn-win.md](docs/notes/adr-001-lantern-fuel-and-dawn-win.md): Phase 3 ADR for lantern fuel & dawn survival.
-- [CHANGELOG.md](CHANGELOG.md): Breaking changes across phases.
-- [docs/proof/phase-1-proof.md](docs/proof/phase-1-proof.md), [docs/proof/phase-2-proof.md](docs/proof/phase-2-proof.md), [docs/proof/phase-3-proof.md](docs/proof/phase-3-proof.md): Verification proofs.
-- [docs/notes/ai-log.md](docs/notes/ai-log.md): AI error analysis and token accounting.
+## 6. Creative Additions (Tắt tự động trong Benchmark & Soak)
+
+1. **Mây & Lồng đèn cầm tay**: Nón lá, áo tơi kem, khăn đỏ 2 đoạn bay theo nhịp bước, dư ảnh khi lướt và độ sáng đèn cầm tay tỉ lệ thuận với số đom đóm đang mang.
+2. **Nhân vật phụ Ông Đăng & Linh vật Đốm Tiên**: Ông Đăng đứng cạnh trạm khởi đầu phản ứng khi Mây lại gần; Đốm Tiên bay quanh Mây và nghiêng về phía đèn chưa sáng / nhiên liệu `< 30`.
+3. **Bóng Mực Tinh Anh & Luồng hút `drain`**: Các Bóng Mực mã số chẵn có sừng đôi & vòng hào quang kép; Bóng ở trạng thái `drain` hiện tia hút từ đèn mục tiêu. *(Toàn bộ nhân vật phụ, biến thể sừng/vòng và hiệu ứng sáng tạo tự động tắt khi `benchmarkMode === true`.)*
+4. **Âm thanh Web Audio API tổng hợp**: Nhạc nền ngũ cung cùng toàn bộ hiệu ứng nhảy, lướt, Tỏa Sáng, cảnh báo gió và đếm ngược.
+
+---
+
+## 7. Project Documentation & Artifacts
+
+- [LICENSE](LICENSE) · [CREDITS.md](CREDITS.md) · [CHANGELOG.md](CHANGELOG.md)
+- [AGENTS.md](AGENTS.md) · [.agents/skills/verify-phase/SKILL.md](.agents/skills/verify-phase/SKILL.md)
+- [docs/notes/retrospective.md](docs/notes/retrospective.md): Đánh giá tổng kết qua 4 phase (Phases 1–4).
+- [docs/proof/phase-4-proof.md](docs/proof/phase-4-proof.md): Bằng chứng kiểm thử Phase 4 (`bench.json`, `soak.json`, 28/28 tests).
+- [docs/proof/phase-1-proof.md](docs/proof/phase-1-proof.md), [phase-2-proof.md](docs/proof/phase-2-proof.md), [phase-3-proof.md](docs/proof/phase-3-proof.md).
+- [docs/notes/adr-001-lantern-fuel-and-dawn-win.md](docs/notes/adr-001-lantern-fuel-and-dawn-win.md) & [docs/notes/ai-log.md](docs/notes/ai-log.md).

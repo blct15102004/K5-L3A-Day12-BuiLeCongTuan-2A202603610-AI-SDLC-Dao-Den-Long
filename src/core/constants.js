@@ -1,6 +1,6 @@
 // Browser-safe & Headless-safe pure constants (NO node:* imports allowed!)
 
-export const CONTRACT_VERSION = '1.2';
+export const CONTRACT_VERSION = '1.3';
 
 export const TUNING = {
   player_speed: 6.0,

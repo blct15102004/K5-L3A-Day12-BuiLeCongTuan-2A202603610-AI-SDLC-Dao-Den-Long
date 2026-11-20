@@ -12,20 +12,29 @@ export class Mat4 {
   }
 
   static perspective(fovyRad, aspect, near, far) {
-    const out = new Mat4();
+    return new Mat4().setPerspective(fovyRad, aspect, near, far);
+  }
+
+  setPerspective(fovyRad, aspect, near, far) {
+    const m = this.m;
+    m.fill(0);
     const f = 1.0 / Math.tan(fovyRad / 2);
     const nf = 1 / (near - far);
-    out.m[0] = f / aspect;
-    out.m[5] = f;
-    out.m[10] = (far + near) * nf;
-    out.m[11] = -1;
-    out.m[14] = (2 * far * near) * nf;
-    out.m[15] = 0;
-    return out;
+    m[0] = f / aspect;
+    m[5] = f;
+    m[10] = (far + near) * nf;
+    m[11] = -1;
+    m[14] = (2 * far * near) * nf;
+    m[15] = 0;
+    return this;
   }
 
   static lookAt(eye, center, up) {
-    const out = new Mat4();
+    return new Mat4().setLookAt(eye, center, up);
+  }
+
+  setLookAt(eye, center, up) {
+    const m = this.m;
     let z0 = eye[0] - center[0];
     let z1 = eye[1] - center[1];
     let z2 = eye[2] - center[2];
@@ -47,14 +56,30 @@ export class Mat4 {
     let y1 = z2 * x0 - z0 * x2;
     let y2 = z0 * x1 - z1 * x0;
 
-    out.m[0] = x0; out.m[1] = y0; out.m[2] = z0; out.m[3] = 0;
-    out.m[4] = x1; out.m[5] = y1; out.m[6] = z1; out.m[7] = 0;
-    out.m[8] = x2; out.m[9] = y2; out.m[10] = z2; out.m[11] = 0;
-    out.m[12] = -(x0 * eye[0] + x1 * eye[1] + x2 * eye[2]);
-    out.m[13] = -(y0 * eye[0] + y1 * eye[1] + y2 * eye[2]);
-    out.m[14] = -(z0 * eye[0] + z1 * eye[1] + z2 * eye[2]);
-    out.m[15] = 1;
-    return out;
+    m[0] = x0; m[1] = y0; m[2] = z0; m[3] = 0;
+    m[4] = x1; m[5] = y1; m[6] = z1; m[7] = 0;
+    m[8] = x2; m[9] = y2; m[10] = z2; m[11] = 0;
+    m[12] = -(x0 * eye[0] + x1 * eye[1] + x2 * eye[2]);
+    m[13] = -(y0 * eye[0] + y1 * eye[1] + y2 * eye[2]);
+    m[14] = -(z0 * eye[0] + z1 * eye[1] + z2 * eye[2]);
+    m[15] = 1;
+    return this;
+  }
+
+  setMultiply(aMat, bMat) {
+    const a = aMat.m;
+    const b = bMat.m;
+    const out = this.m;
+    for (let i = 0; i < 4; i++) {
+      for (let j = 0; j < 4; j++) {
+        out[i * 4 + j] =
+          a[0 * 4 + j] * b[i * 4 + 0] +
+          a[1 * 4 + j] * b[i * 4 + 1] +
+          a[2 * 4 + j] * b[i * 4 + 2] +
+          a[3 * 4 + j] * b[i * 4 + 3];
+      }
+    }
+    return this;
   }
 
   multiply(b) {
@@ -93,6 +118,24 @@ export class Mat4 {
     const s = new Mat4();
     s.m[0] = sx; s.m[5] = sy; s.m[10] = sz;
     return this.multiply(s);
+  }
+
+  setTRS(tx, ty, tz, sx, sy, sz, rotY = 0) {
+    const m = this.m;
+    if (rotY === 0) {
+      m[0] = sx; m[1] = 0; m[2] = 0; m[3] = 0;
+      m[4] = 0; m[5] = sy; m[6] = 0; m[7] = 0;
+      m[8] = 0; m[9] = 0; m[10] = sz; m[11] = 0;
+      m[12] = tx; m[13] = ty; m[14] = tz; m[15] = 1;
+    } else {
+      const c = Math.cos(rotY);
+      const s = Math.sin(rotY);
+      m[0] = c * sx; m[1] = 0; m[2] = -s * sx; m[3] = 0;
+      m[4] = 0; m[5] = sy; m[6] = 0; m[7] = 0;
+      m[8] = s * sz; m[9] = 0; m[10] = c * sz; m[11] = 0;
+      m[12] = tx; m[13] = ty; m[14] = tz; m[15] = 1;
+    }
+    return this;
   }
 
   transformVec4(v) {

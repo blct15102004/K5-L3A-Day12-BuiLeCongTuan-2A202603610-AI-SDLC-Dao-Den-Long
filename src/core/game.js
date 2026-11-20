@@ -57,6 +57,7 @@ export class GameEngine {
     this.randomMotes = true;
     this.randomShades = true;
     this.randomDrifters = true;
+    this.benchmarkMode = Boolean(options.benchmark);
 
     this.player = {
       pos: [...this.map.spawn],
@@ -109,7 +110,71 @@ export class GameEngine {
     };
 
     this.events = [];
-    this.initScenario(options.scenario);
+    if (this.benchmarkMode) {
+      this.initBenchmarkScene();
+    } else {
+      this.initScenario(options.scenario);
+    }
+  }
+
+  initBenchmarkScene() {
+    this.randomMotes = false;
+    this.randomShades = false;
+    this.randomDrifters = false;
+    this.player.pos = [0, 0, 0];
+    this.player.grounded = true;
+
+    // L1-L3 lit with fuel: 100; L4-L5 unlit
+    for (let i = 0; i < this.lanterns.length; i++) {
+      if (i < 3) {
+        this.lanterns[i].lit = true;
+        this.lanterns[i].everLit = true;
+        this.lanterns[i].fuelUnits = PHYSICS.FUEL_MAX_UNITS;
+      } else {
+        this.lanterns[i].lit = false;
+        this.lanterns[i].fuelUnits = 0;
+      }
+    }
+
+    // 100 fireflies evenly distributed across Night 1 island
+    const goldenAngle = 2.39996323;
+    const seedAngleOffset = this.prng.range(0, Math.PI * 2);
+    for (let i = 0; i < 100; i++) {
+      const r = 36.0 * Math.sqrt((i + 0.5) / 100);
+      const a = i * goldenAngle + seedAngleOffset;
+      this.motes.push({
+        id: `M${this.moteCounter++}`,
+        pos: [round3(r * Math.cos(a)), 0, round3(r * Math.sin(a))],
+        kind: 'random',
+        ttlTicks: null,
+        spawnTick: -1
+      });
+    }
+
+    // 200 Ink Shades in wander evenly distributed outside L1-L3 safe zones
+    for (let i = 0; i < 200; i++) {
+      const r = 37.0 * Math.sqrt((i + 0.5) / 200);
+      const a = i * goldenAngle + seedAngleOffset + 0.5;
+      let sx = r * Math.cos(a);
+      let sz = r * Math.sin(a);
+      const safe = this.applyShadeSafety(sx, sz, 0.8, true);
+      this.shades.push({
+        id: `S${this.shadeCounter++}`,
+        pos: [safe.x, 0.8, safe.z],
+        yOffset: 0.8,
+        state: 'wander',
+        stateTicksLeft: 0,
+        targetLanternId: null,
+        drainTickCounter: 0,
+        pushTicksLeft: 0,
+        pushDir: [1, 0],
+        recoilDir: [1, 0],
+        safePushLanternId: null,
+        safePushTicksLeft: 0,
+        wanderAngle: this.prng.range(0, Math.PI * 2),
+        spawnTick: -1
+      });
+    }
   }
 
   getCarryCapacity() {
@@ -410,51 +475,53 @@ export class GameEngine {
     }
 
     // Lantern Passive Fuel Decay (1/60 per tick) & Shadow Drain (5/60 per tick)
-    for (const lantern of this.lanterns) {
-      if (lantern.lit && lantern.fuelUnits > 0) {
-        lantern.fuelUnits = Math.max(0, lantern.fuelUnits - PHYSICS.FUEL_DECAY_UNITS);
+    if (!this.benchmarkMode) {
+      for (const lantern of this.lanterns) {
+        if (lantern.lit && lantern.fuelUnits > 0) {
+          lantern.fuelUnits = Math.max(0, lantern.fuelUnits - PHYSICS.FUEL_DECAY_UNITS);
+        }
       }
-    }
 
-    for (const shade of this.shades) {
-      if (shade.state === 'drain' && shade.targetLanternId) {
-        const target = this.lanterns.find(l => l.id === shade.targetLanternId);
-        if (target && target.lit) {
-          target.fuelUnits = Math.max(0, target.fuelUnits - PHYSICS.FUEL_DRAIN_UNITS);
-          shade.drainTickCounter += 1;
-          if (shade.drainTickCounter % 60 === 0) {
-            this.events.push({
-              type: 'event',
-              tick,
-              name: 'fuel_drain',
-              data: {
-                lantern_id: target.id,
-                shade_id: shade.id,
-                fuel: round1(target.fuelUnits / 60)
-              }
-            });
+      for (const shade of this.shades) {
+        if (shade.state === 'drain' && shade.targetLanternId) {
+          const target = this.lanterns.find(l => l.id === shade.targetLanternId);
+          if (target && target.lit) {
+            target.fuelUnits = Math.max(0, target.fuelUnits - PHYSICS.FUEL_DRAIN_UNITS);
+            shade.drainTickCounter += 1;
+            if (shade.drainTickCounter % 60 === 0) {
+              this.events.push({
+                type: 'event',
+                tick,
+                name: 'fuel_drain',
+                data: {
+                  lantern_id: target.id,
+                  shade_id: shade.id,
+                  fuel: round1(target.fuelUnits / 60)
+                }
+              });
+            }
           }
+        }
+      }
+
+      // Extinguish lanterns whose fuel reached <= 0 immediately after Step 2
+      for (const lantern of this.lanterns) {
+        if (lantern.lit && lantern.fuelUnits <= 0) {
+          lantern.fuelUnits = 0;
+          lantern.lit = false;
+          lantern.deposited = 0;
+          this.events.push({
+            type: 'event',
+            tick,
+            name: 'lantern_out',
+            data: { lantern_id: lantern.id }
+          });
         }
       }
     }
 
-    // Extinguish lanterns whose fuel reached <= 0 immediately after Step 2
-    for (const lantern of this.lanterns) {
-      if (lantern.lit && lantern.fuelUnits <= 0) {
-        lantern.fuelUnits = 0;
-        lantern.lit = false;
-        lantern.deposited = 0;
-        this.events.push({
-          type: 'event',
-          tick,
-          name: 'lantern_out',
-          data: { lantern_id: lantern.id }
-        });
-      }
-    }
-
     // 3. Move Mây (walk, jump, dash, launch pads, wind) & check fall off island
-    if (this.player.respawnTicks === 0) {
+    if (!this.benchmarkMode && this.player.respawnTicks === 0) {
       const move = input.move || [0, 0];
       const mx = move[0] ?? 0;
       const mz = move[1] ?? 0;
@@ -592,7 +659,7 @@ export class GameEngine {
     }
 
     // 4. Pickup Motes & Charms
-    if (this.player.respawnTicks === 0 && this.player.flames > 0) {
+    if (!this.benchmarkMode && this.player.respawnTicks === 0 && this.player.flames > 0) {
       const cap = this.getCarryCapacity();
       for (let i = this.motes.length - 1; i >= 0; i--) {
         const mote = this.motes[i];
@@ -634,7 +701,7 @@ export class GameEngine {
     }
 
     // 5. Interact with Lantern (unlit OR lit with fuel < 100; closest, tie-break smallest ID)
-    if (this.player.respawnTicks === 0 && this.player.flames > 0 && interactPressed && this.player.carried > 0) {
+    if (!this.benchmarkMode && this.player.respawnTicks === 0 && this.player.flames > 0 && interactPressed && this.player.carried > 0) {
       const candidates = [];
       for (const lantern of this.lanterns) {
         const isValid = !lantern.lit || (lantern.lit && lantern.fuelUnits < PHYSICS.FUEL_MAX_UNITS);
@@ -903,7 +970,7 @@ export class GameEngine {
       }
 
       if (shade.state === 'wander') {
-        if (this.player.respawnTicks === 0 && distToPlayer <= PHYSICS.SHADE_DETECT_R) {
+        if (!this.benchmarkMode && this.player.respawnTicks === 0 && distToPlayer <= PHYSICS.SHADE_DETECT_R) {
           shade.state = 'chase';
           shade.targetLanternId = null;
         }
@@ -1024,7 +1091,7 @@ export class GameEngine {
     }
 
     // 9. Collisions: Drifters steal FIRST, then Shades hit (ascending ID, max 1 flame/tick)
-    if (this.player.respawnTicks === 0 && this.player.flames > 0) {
+    if (!this.benchmarkMode && this.player.respawnTicks === 0 && this.player.flames > 0) {
       for (const drifter of this.drifters) {
         if (
           drifter.state === 'chase' &&
@@ -1195,6 +1262,7 @@ export class GameEngine {
     }
 
     // 11. Check Win / Loss (Phase 3 Dawn Survival: no early win on all_lit)
+    if (this.benchmarkMode) return this.events;
     if (this.player.flames <= 0) {
       this.state = 'lost';
       this.gameOverReason = 'no_flames';

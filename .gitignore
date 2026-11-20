@@ -1,4 +1,6 @@
 node_modules/
 tests/temp/
+data/
+dist/
 *.jsonl
 .DS_Store

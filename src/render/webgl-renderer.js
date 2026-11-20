@@ -4,13 +4,11 @@ import { PALETTE } from '../core/constants.js';
 const VS_SOURCE = `
   attribute vec3 aPosition;
   attribute vec3 aNormal;
-  attribute vec3 aColor;
 
   uniform mat4 uModel;
   uniform mat4 uView;
   uniform mat4 uProjection;
   uniform vec3 uColorOverride;
-  uniform float uUseOverride;
 
   varying vec3 vNormal;
   varying vec3 vFragPos;
@@ -20,8 +18,43 @@ const VS_SOURCE = `
     vec4 worldPos = uModel * vec4(aPosition, 1.0);
     vFragPos = worldPos.xyz;
     vNormal = mat3(uModel) * aNormal;
-    vColor = mix(aColor, uColorOverride, uUseOverride);
+    vColor = uColorOverride;
     gl_Position = uProjection * uView * worldPos;
+  }
+`;
+
+const VS_INST_SOURCE = `
+  attribute vec3 aPosition;
+  attribute vec3 aNormal;
+  attribute vec4 aInstPosRot;
+  attribute vec3 aInstScale;
+  attribute vec3 aInstColor;
+
+  uniform mat4 uView;
+  uniform mat4 uProjection;
+
+  varying vec3 vNormal;
+  varying vec3 vFragPos;
+  varying vec3 vColor;
+
+  void main() {
+    float c = cos(aInstPosRot.w);
+    float s = sin(aInstPosRot.w);
+    vec3 scaled = aPosition * aInstScale;
+    vec3 rotated = vec3(
+      c * scaled.x + s * scaled.z,
+      scaled.y,
+      -s * scaled.x + c * scaled.z
+    );
+    vec3 ns = aNormal * aInstScale;
+    vNormal = vec3(
+      c * ns.x + s * ns.z,
+      ns.y,
+      -s * ns.x + c * ns.z
+    );
+    vFragPos = rotated + aInstPosRot.xyz;
+    vColor = aInstColor;
+    gl_Position = uProjection * uView * vec4(vFragPos, 1.0);
   }
 `;
 
@@ -102,17 +135,51 @@ function createShader(gl, type, source) {
 export class WebGLRenderer {
   constructor(canvas) {
     this.canvas = canvas;
-    this.gl = canvas.getContext('webgl', { antialias: true });
+    this.gl = canvas.getContext('webgl', { antialias: true, powerPreference: 'high-performance' });
     if (!this.gl) return;
 
     this.pulseWaves = [];
     this.particles = [];
     this.dashTrails = [];
+    this.scratchMat = new Mat4();
+    this.projMat = new Mat4();
+    this.viewMat = new Mat4();
+    this.vpMat = new Mat4();
+    this.identityMat = new Mat4();
+    this.rampMatA = new Mat4().rotateY(-Math.PI / 6);
+    this.rampMatB = new Mat4().rotateY(-(5 * Math.PI) / 6);
+    this.upVec = [0, 1, 0];
+    this.lPosArray = new Float32Array(21);
+    this.lLitArray = new Float32Array(7);
+    this.playerPosF32 = new Float32Array(3);
+    this.pulsePosF32 = new Float32Array(3);
+    this.lastBoundMesh = null;
+    this.instExt = this.gl.getExtension('ANGLE_instanced_arrays');
+    this.MAX_INSTANCES = 512;
+    this.instStrideFloats = 10;
+    this.instData = new Float32Array(this.MAX_INSTANCES * this.instStrideFloats);
+    this.instBuffer = this.instExt ? this.gl.createBuffer() : null;
+    if (this.instBuffer) {
+      this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.instBuffer);
+      this.gl.bufferData(this.gl.ARRAY_BUFFER, this.instData.byteLength, this.gl.STREAM_DRAW);
+    }
     this.initProgram();
     this.initMeshes();
 
     this.gl.enable(this.gl.DEPTH_TEST);
     this.gl.clearColor(PALETTE.sky[0], PALETTE.sky[1], PALETTE.sky[2], 1.0);
+  }
+
+  getRendererInfo() {
+    if (!this.gl) return 'WebGL unavailable';
+    const gl = this.gl;
+    let info = gl.getParameter(gl.RENDERER) || 'WebGL 1.0';
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    if (dbg) {
+      const unmasked = gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+      if (unmasked) info = unmasked;
+    }
+    return `Custom WebGL 1.0 (${info})`;
   }
 
   triggerPulseWave(pos) {
@@ -158,6 +225,26 @@ export class WebGLRenderer {
     }
   }
 
+  collectUniforms(prog) {
+    const gl = this.gl;
+    return {
+      model: gl.getUniformLocation(prog, 'uModel'),
+      view: gl.getUniformLocation(prog, 'uView'),
+      projection: gl.getUniformLocation(prog, 'uProjection'),
+      colorOverride: gl.getUniformLocation(prog, 'uColorOverride'),
+      lanternLights: gl.getUniformLocation(prog, 'uLanternLights'),
+      lanternLit: gl.getUniformLocation(prog, 'uLanternLit'),
+      lanternCount: gl.getUniformLocation(prog, 'uLanternCount'),
+      playerPos: gl.getUniformLocation(prog, 'uPlayerPos'),
+      playerGlowStrength: gl.getUniformLocation(prog, 'uPlayerGlowStrength'),
+      pulsePos: gl.getUniformLocation(prog, 'uPulsePos'),
+      pulseStrength: gl.getUniformLocation(prog, 'uPulseStrength'),
+      ambientIntensity: gl.getUniformLocation(prog, 'uAmbientIntensity'),
+      fogColor: gl.getUniformLocation(prog, 'uFogColor'),
+      unlitEmissive: gl.getUniformLocation(prog, 'uUnlitEmissive')
+    };
+  }
+
   initProgram() {
     const gl = this.gl;
     const vs = createShader(gl, gl.VERTEX_SHADER, VS_SOURCE);
@@ -165,31 +252,26 @@ export class WebGLRenderer {
     this.program = gl.createProgram();
     gl.attachShader(this.program, vs);
     gl.attachShader(this.program, fs);
+    gl.bindAttribLocation(this.program, 0, 'aPosition');
+    gl.bindAttribLocation(this.program, 1, 'aNormal');
     gl.linkProgram(this.program);
 
-    this.attribs = {
-      position: gl.getAttribLocation(this.program, 'aPosition'),
-      normal: gl.getAttribLocation(this.program, 'aNormal'),
-      color: gl.getAttribLocation(this.program, 'aColor')
-    };
+    this.attribs = { position: 0, normal: 1 };
+    this.uniforms = this.collectUniforms(this.program);
 
-    this.uniforms = {
-      model: gl.getUniformLocation(this.program, 'uModel'),
-      view: gl.getUniformLocation(this.program, 'uView'),
-      projection: gl.getUniformLocation(this.program, 'uProjection'),
-      colorOverride: gl.getUniformLocation(this.program, 'uColorOverride'),
-      useOverride: gl.getUniformLocation(this.program, 'uUseOverride'),
-      lanternLights: gl.getUniformLocation(this.program, 'uLanternLights'),
-      lanternLit: gl.getUniformLocation(this.program, 'uLanternLit'),
-      lanternCount: gl.getUniformLocation(this.program, 'uLanternCount'),
-      playerPos: gl.getUniformLocation(this.program, 'uPlayerPos'),
-      playerGlowStrength: gl.getUniformLocation(this.program, 'uPlayerGlowStrength'),
-      pulsePos: gl.getUniformLocation(this.program, 'uPulsePos'),
-      pulseStrength: gl.getUniformLocation(this.program, 'uPulseStrength'),
-      ambientIntensity: gl.getUniformLocation(this.program, 'uAmbientIntensity'),
-      fogColor: gl.getUniformLocation(this.program, 'uFogColor'),
-      unlitEmissive: gl.getUniformLocation(this.program, 'uUnlitEmissive')
-    };
+    if (this.instExt) {
+      const vsInst = createShader(gl, gl.VERTEX_SHADER, VS_INST_SOURCE);
+      this.instProgram = gl.createProgram();
+      gl.attachShader(this.instProgram, vsInst);
+      gl.attachShader(this.instProgram, fs);
+      gl.bindAttribLocation(this.instProgram, 0, 'aPosition');
+      gl.bindAttribLocation(this.instProgram, 1, 'aNormal');
+      gl.bindAttribLocation(this.instProgram, 2, 'aInstPosRot');
+      gl.bindAttribLocation(this.instProgram, 3, 'aInstScale');
+      gl.bindAttribLocation(this.instProgram, 4, 'aInstColor');
+      gl.linkProgram(this.instProgram);
+      this.instUniforms = this.collectUniforms(this.instProgram);
+    }
   }
 
   initMeshes() {
@@ -198,6 +280,7 @@ export class WebGLRenderer {
       cylinder: this.createCylinder(32),
       cone: this.createCone(24),
       sphere: this.createSphere(12, 12),
+      sphereLow: this.createSphere(8, 8),
       halfAnnulus: this.createHalfAnnulus(12, 24, 3, 28),
       ramp: this.createRamp(3, 6, 3),
       ring: this.createRing(32)
@@ -387,26 +470,105 @@ export class WebGLRenderer {
     const gl = this.gl;
     gl.uniformMatrix4fv(this.uniforms.model, false, modelMatrix.m);
     gl.uniform3fv(this.uniforms.colorOverride, color);
-    gl.uniform1f(this.uniforms.useOverride, 1.0);
     gl.uniform1f(this.uniforms.unlitEmissive, emissive);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, mesh.posBuffer);
-    gl.vertexAttribPointer(this.attribs.position, 3, gl.FLOAT, false, 0, 0);
-    gl.enableVertexAttribArray(this.attribs.position);
+    if (this.lastBoundMesh !== mesh) {
+      this.lastBoundMesh = mesh;
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.posBuffer);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+      gl.enableVertexAttribArray(0);
 
-    gl.bindBuffer(gl.ARRAY_BUFFER, mesh.normBuffer);
-    gl.vertexAttribPointer(this.attribs.normal, 3, gl.FLOAT, false, 0, 0);
-    gl.enableVertexAttribArray(this.attribs.normal);
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.normBuffer);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+      gl.enableVertexAttribArray(1);
 
-    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.idxBuffer);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.idxBuffer);
+    }
     gl.drawElements(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0);
+  }
+
+  pushInstance(count, tx, ty, tz, rotY, sx, sy, sz, col) {
+    if (count >= this.MAX_INSTANCES) return count;
+    const o = count * 10;
+    const d = this.instData;
+    d[o] = tx; d[o + 1] = ty; d[o + 2] = tz; d[o + 3] = rotY;
+    d[o + 4] = sx; d[o + 5] = sy; d[o + 6] = sz;
+    d[o + 7] = col[0]; d[o + 8] = col[1]; d[o + 9] = col[2];
+    return count + 1;
+  }
+
+  uploadFrameUniforms(u, count, playerGlow, pulseStrength, ambientIntensity) {
+    const gl = this.gl;
+    gl.uniformMatrix4fv(u.projection, false, this.projMat.m);
+    gl.uniformMatrix4fv(u.view, false, this.viewMat.m);
+    gl.uniform3fv(u.lanternLights, this.lPosArray);
+    gl.uniform1fv(u.lanternLit, this.lLitArray);
+    gl.uniform1i(u.lanternCount, count);
+    gl.uniform3fv(u.playerPos, this.playerPosF32);
+    gl.uniform1f(u.playerGlowStrength, playerGlow);
+    gl.uniform3fv(u.pulsePos, this.pulsePosF32);
+    gl.uniform1f(u.pulseStrength, pulseStrength);
+    gl.uniform1f(u.ambientIntensity, ambientIntensity);
+    gl.uniform3fv(u.fogColor, PALETTE.fog);
+  }
+
+  beginInstancedPass(count, playerGlow, pulseStrength, ambientIntensity) {
+    const gl = this.gl;
+    gl.useProgram(this.instProgram);
+    this.uploadFrameUniforms(this.instUniforms, count, playerGlow, pulseStrength, ambientIntensity);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instBuffer);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 40, 0);
+    this.instExt.vertexAttribDivisorANGLE(2, 1);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribPointer(3, 3, gl.FLOAT, false, 40, 16);
+    this.instExt.vertexAttribDivisorANGLE(3, 1);
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribPointer(4, 3, gl.FLOAT, false, 40, 28);
+    this.instExt.vertexAttribDivisorANGLE(4, 1);
+    this.lastBoundMesh = null;
+  }
+
+  drawInstancedBatch(mesh, instCount, emissive) {
+    if (instCount <= 0) return;
+    const gl = this.gl;
+    gl.uniform1f(this.instUniforms.unlitEmissive, emissive);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, this.instData.subarray(0, instCount * 10), gl.STREAM_DRAW);
+
+    if (this.lastBoundMesh !== mesh) {
+      this.lastBoundMesh = mesh;
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.posBuffer);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+      gl.enableVertexAttribArray(0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, mesh.normBuffer);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+      gl.enableVertexAttribArray(1);
+
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.idxBuffer);
+    }
+    this.instExt.drawElementsInstancedANGLE(gl.TRIANGLES, mesh.count, gl.UNSIGNED_SHORT, 0, instCount);
+  }
+
+  endInstancedPass() {
+    const gl = this.gl;
+    this.instExt.vertexAttribDivisorANGLE(2, 0);
+    this.instExt.vertexAttribDivisorANGLE(3, 0);
+    this.instExt.vertexAttribDivisorANGLE(4, 0);
+    gl.disableVertexAttribArray(2);
+    gl.disableVertexAttribArray(3);
+    gl.disableVertexAttribArray(4);
+    gl.useProgram(this.program);
+    this.lastBoundMesh = null;
   }
 
   getViewProjection(camera) {
     const aspect = this.canvas.width / Math.max(1, this.canvas.height);
-    const proj = Mat4.perspective((60 * Math.PI) / 180, aspect, 0.1, 220.0);
-    const view = Mat4.lookAt(camera.eye, camera.target, [0, 1, 0]);
-    return { proj, view, vp: proj.clone().multiply(view) };
+    this.projMat.setPerspective((60 * Math.PI) / 180, aspect, 0.1, 220.0);
+    this.viewMat.setLookAt(camera.eye, camera.target, this.upVec);
+    this.vpMat.setMultiply(this.projMat, this.viewMat);
+    return { proj: this.projMat, view: this.viewMat, vp: this.vpMat };
   }
 
   projectToScreen(worldPos, camera) {
@@ -431,6 +593,9 @@ export class WebGLRenderer {
     const gl = this.gl;
     if (!gl) return;
     const colorblind = !!options.colorblind;
+    const reducedMotion = !!options.reducedMotion;
+    const benchmarkMode = !!options.benchmarkMode || !!engine.benchmarkMode;
+    this.lastBoundMesh = null;
 
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -440,15 +605,19 @@ export class WebGLRenderer {
     gl.uniformMatrix4fv(this.uniforms.projection, false, proj.m);
     gl.uniformMatrix4fv(this.uniforms.view, false, view.m);
 
-    const litCount = engine.lanterns.filter(l => l.lit).length;
+    const sm = this.scratchMat;
+    let litCount = 0;
+    for (let i = 0; i < engine.lanterns.length; i++) {
+      if (engine.lanterns[i].lit) litCount++;
+    }
     const totalLanterns = Math.max(1, engine.lanterns.length);
     const ambientIntensity = 0.15 + 0.55 * (litCount / totalLanterns);
 
     const activeDt = engine.state === 'paused' ? 0 : dtSec;
     const timeSec = engine.simTick / 60.0;
 
-    const lPosArray = new Float32Array(21);
-    const lLitArray = new Float32Array(7);
+    const lPosArray = this.lPosArray;
+    const lLitArray = this.lLitArray;
     const count = Math.min(7, engine.lanterns.length);
     for (let i = 0; i < count; i++) {
       const l = engine.lanterns[i];
@@ -458,7 +627,7 @@ export class WebGLRenderer {
       if (l.lit) {
         const fuelRatio = Math.max(0, Math.min(1, l.fuelUnits / 6000));
         const isLow = l.fuelUnits < 1800;
-        const blinkOn = !isLow || Math.floor(timeSec * 2.0) % 2 === 0;
+        const blinkOn = reducedMotion || !isLow || Math.floor(timeSec * 2.0) % 2 === 0;
         lLitArray[i] = blinkOn ? 0.35 + 0.65 * fuelRatio : 0.15;
       } else {
         lLitArray[i] = 0.0;
@@ -472,19 +641,17 @@ export class WebGLRenderer {
     const pulseStrength = latestPulse ? Math.max(0, 1.0 - latestPulse.age / latestPulse.maxAge) * 2.8 : 0.0;
     const pulsePos = latestPulse ? latestPulse.pos : engine.player.pos;
 
-    gl.uniform3fv(this.uniforms.lanternLights, lPosArray);
-    gl.uniform1fv(this.uniforms.lanternLit, lLitArray);
-    gl.uniform1i(this.uniforms.lanternCount, count);
-    gl.uniform3fv(this.uniforms.playerPos, new Float32Array(engine.player.pos));
-    gl.uniform1f(this.uniforms.playerGlowStrength, playerGlow);
-    gl.uniform3fv(this.uniforms.pulsePos, new Float32Array(pulsePos));
-    gl.uniform1f(this.uniforms.pulseStrength, pulseStrength);
-    gl.uniform1f(this.uniforms.ambientIntensity, ambientIntensity);
-    gl.uniform3fv(this.uniforms.fogColor, PALETTE.fog);
+    this.playerPosF32[0] = engine.player.pos[0];
+    this.playerPosF32[1] = engine.player.pos[1];
+    this.playerPosF32[2] = engine.player.pos[2];
+    this.pulsePosF32[0] = pulsePos[0];
+    this.pulsePosF32[1] = pulsePos[1];
+    this.pulsePosF32[2] = pulsePos[2];
+
+    this.uploadFrameUniforms(this.uniforms, count, playerGlow, pulseStrength, ambientIntensity);
 
     // 0. Sea of Clouds (#12384A) + Drifting Cloud Banks + Starry Night Sky
-    const cloudMat = new Mat4().translate(30, -14.5, 0).scale(240, 0.5, 240);
-    this.drawMesh(this.meshes.cube, cloudMat, PALETTE.cloudSea, 0.25);
+    this.drawMesh(this.meshes.cube, sm.setTRS(30, -14.5, 0, 240, 0.5, 240), PALETTE.cloudSea, 0.25);
 
     for (let i = 0; i < 18; i++) {
       const ang = (i * Math.PI * 2) / 18 + timeSec * 0.015;
@@ -493,8 +660,8 @@ export class WebGLRenderer {
       const cz = Math.sin(ang) * dist;
       const cy = -8.5 + Math.sin(timeSec * 0.6 + i) * 0.7;
       const cw = 18 + (i % 4) * 5;
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(cx, cy, cz).scale(cw, 4.2, cw * 0.75), PALETTE.cloudSea, 0.18);
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(cx + 3, cy + 1.1, cz - 2).scale(cw * 0.65, 3.0, cw * 0.55), PALETTE.fog, 0.22);
+      this.drawMesh(this.meshes.sphere, sm.setTRS(cx, cy, cz, cw, 4.2, cw * 0.75), PALETTE.cloudSea, 0.18);
+      this.drawMesh(this.meshes.sphere, sm.setTRS(cx + 3, cy + 1.1, cz - 2, cw * 0.65, 3.0, cw * 0.55), PALETTE.fog, 0.22);
     }
 
     // Distant Night Stars
@@ -505,208 +672,259 @@ export class WebGLRenderer {
       const sz = Math.sin(sa) * sr;
       const sy = 22 + (i % 7) * 4;
       const twinkle = 0.22 + 0.16 * Math.sin(timeSec * 2.5 + i);
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(sx, sy, sz).scale(twinkle, twinkle, twinkle), PALETTE.moteCore, 0.95);
+      this.drawMesh(this.meshes.sphereLow, sm.setTRS(sx, sy, sz, twinkle, twinkle, twinkle), PALETTE.moteCore, 0.95);
     }
 
     // 1. Render Floating Island Geometry by Night (with tapered floating undersides)
     if (engine.night === 1) {
-      this.drawMesh(this.meshes.cone, new Mat4().translate(0, -6.5, 0).scale(38, -10.0, 38), PALETTE.wood);
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, -1.5, 0).scale(40, 3.0, 40), PALETTE.sand);
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, -0.45, 0).scale(38.5, 1.0, 38.5), PALETTE.grass);
-      // Decorative stone border markers & trees around outer rim
+      this.drawMesh(this.meshes.cone, sm.setTRS(0, -6.5, 0, 38, -10.0, 38), PALETTE.wood);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(0, -1.5, 0, 40, 3.0, 40), PALETTE.sand);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(0, -0.45, 0, 38.5, 1.0, 38.5), PALETTE.grass);
       for (let i = 0; i < 8; i++) {
         const a = (i * Math.PI * 2) / 8 + 0.35;
         const tx = Math.cos(a) * 35.5, tz = Math.sin(a) * 35.5;
-        this.drawMesh(this.meshes.cylinder, new Mat4().translate(tx, 1.1, tz).scale(0.45, 2.2, 0.45), PALETTE.wood);
-        this.drawMesh(this.meshes.cone, new Mat4().translate(tx, 2.9, tz).scale(2.1, 2.4, 2.1), PALETTE.grass);
+        this.drawMesh(this.meshes.cylinder, sm.setTRS(tx, 1.1, tz, 0.45, 2.2, 0.45), PALETTE.wood);
+        this.drawMesh(this.meshes.cone, sm.setTRS(tx, 2.9, tz, 2.1, 2.4, 2.1), PALETTE.grass);
       }
     } else if (engine.night === 2) {
       for (const cx of [0, 70]) {
-        this.drawMesh(this.meshes.cone, new Mat4().translate(cx, -5.8, 0).scale(26, -8.5, 26), PALETTE.wood);
-        this.drawMesh(this.meshes.cylinder, new Mat4().translate(cx, -1.5, 0).scale(28, 3.0, 28), PALETTE.sand);
-        this.drawMesh(this.meshes.cylinder, new Mat4().translate(cx, -0.45, 0).scale(26.5, 1.0, 26.5), PALETTE.grass);
+        this.drawMesh(this.meshes.cone, sm.setTRS(cx, -5.8, 0, 26, -8.5, 26), PALETTE.wood);
+        this.drawMesh(this.meshes.cylinder, sm.setTRS(cx, -1.5, 0, 28, 3.0, 28), PALETTE.sand);
+        this.drawMesh(this.meshes.cylinder, sm.setTRS(cx, -0.45, 0, 26.5, 1.0, 26.5), PALETTE.grass);
       }
-      // Bamboo bridge x in [26, 44], z in [-2, 2] with bamboo posts
-      this.drawMesh(this.meshes.cube, new Mat4().translate(35, -0.25, 0).scale(18, 0.5, 4), PALETTE.wood);
+      this.drawMesh(this.meshes.cube, sm.setTRS(35, -0.25, 0, 18, 0.5, 4), PALETTE.wood);
       for (const bx of [28, 32, 38, 42]) {
-        this.drawMesh(this.meshes.cylinder, new Mat4().translate(bx, 0.35, 1.9).scale(0.18, 0.9, 0.18), PALETTE.sand);
-        this.drawMesh(this.meshes.cylinder, new Mat4().translate(bx, 0.35, -1.9).scale(0.18, 0.9, 0.18), PALETTE.sand);
+        this.drawMesh(this.meshes.cylinder, sm.setTRS(bx, 0.35, 1.9, 0.18, 0.9, 0.18), PALETTE.sand);
+        this.drawMesh(this.meshes.cylinder, sm.setTRS(bx, 0.35, -1.9, 0.18, 0.9, 0.18), PALETTE.sand);
       }
     } else if (engine.night === 3) {
-      this.drawMesh(this.meshes.cone, new Mat4().translate(0, -7.2, 0).scale(43, -11.5, 43), PALETTE.wood);
-      // Tier 0 (r=45, Y=0)
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, -1.5, 0).scale(45, 3.0, 45), PALETTE.sand);
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, -0.45, 0).scale(43.5, 1.0, 43.5), PALETTE.grass);
-      // Tier 1 (half-annulus r=12..24, z>0, Y=3)
-      this.drawMesh(this.meshes.halfAnnulus, new Mat4(), PALETTE.grass);
-      // Tier 2 (disc r=8, Y=6)
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, 3.0, 0).scale(8, 6.0, 8), PALETTE.sand);
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, 5.6, 0).scale(7.9, 0.9, 7.9), PALETTE.grass);
-      // Two ramps at 30 deg and 150 deg
-      this.drawMesh(this.meshes.ramp, new Mat4().rotateY(-Math.PI / 6), PALETTE.wood);
-      this.drawMesh(this.meshes.ramp, new Mat4().rotateY(-(5 * Math.PI) / 6), PALETTE.wood);
-      // Bell Tower at (0, 6, 0), radius 2, height 8
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, 10.0, 0).scale(2.0, 8.0, 2.0), PALETTE.wood);
-      this.drawMesh(this.meshes.cone, new Mat4().translate(0, 15.0, 0).scale(3.4, 2.4, 3.4), PALETTE.mayScarf);
-      this.drawMesh(this.meshes.cone, new Mat4().translate(0, 16.4, 0).scale(1.6, 1.2, 1.6), PALETTE.goldUi, 0.35);
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(0, 11.2, 0).scale(1.1, 1.3, 1.1), PALETTE.goldUi, 0.4);
+      this.drawMesh(this.meshes.cone, sm.setTRS(0, -7.2, 0, 43, -11.5, 43), PALETTE.wood);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(0, -1.5, 0, 45, 3.0, 45), PALETTE.sand);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(0, -0.45, 0, 43.5, 1.0, 43.5), PALETTE.grass);
+      this.drawMesh(this.meshes.halfAnnulus, this.identityMat, PALETTE.grass);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(0, 3.0, 0, 8, 6.0, 8), PALETTE.sand);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(0, 5.6, 0, 7.9, 0.9, 7.9), PALETTE.grass);
+      this.drawMesh(this.meshes.ramp, this.rampMatA, PALETTE.wood);
+      this.drawMesh(this.meshes.ramp, this.rampMatB, PALETTE.wood);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(0, 10.0, 0, 2.0, 8.0, 2.0), PALETTE.wood);
+      this.drawMesh(this.meshes.cone, sm.setTRS(0, 15.0, 0, 3.4, 2.4, 3.4), PALETTE.mayScarf);
+      this.drawMesh(this.meshes.cone, sm.setTRS(0, 16.4, 0, 1.6, 1.2, 1.6), PALETTE.goldUi, 0.35);
+      this.drawMesh(this.meshes.sphere, sm.setTRS(0, 11.2, 0, 1.1, 1.3, 1.1), PALETTE.goldUi, 0.4);
     }
 
     // Launch Pads
-    for (const pad of engine.map.launchPads) {
+    for (let i = 0; i < engine.map.launchPads.length; i++) {
+      const pad = engine.map.launchPads[i];
       const pulsePad = 1.05 + 0.1 * Math.sin(timeSec * 4.5);
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(pad.pos[0], pad.pos[1] + 0.08, pad.pos[2]).scale(1.0, 0.16, 1.0), PALETTE.goldUi, 0.65);
-      this.drawMesh(this.meshes.ring, new Mat4().translate(pad.pos[0], pad.pos[1] + 0.18, pad.pos[2]).scale(pulsePad, 1, pulsePad), PALETTE.lanternCore, 0.85);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(pad.pos[0], pad.pos[1] + 0.08, pad.pos[2], 1.0, 0.16, 1.0), PALETTE.goldUi, 0.65);
+      this.drawMesh(this.meshes.ring, sm.setTRS(pad.pos[0], pad.pos[1] + 0.18, pad.pos[2], pulsePad, 1, pulsePad), PALETTE.lanternCore, 0.85);
     }
 
     // 2. Render Great Lanterns (Tiered Pagoda Lanterns + Fuel Bar + 1Hz Low-Fuel Blink + Unlit Compression/Tears)
-    for (const lantern of engine.lanterns) {
+    for (let i = 0; i < engine.lanterns.length; i++) {
+      const lantern = engine.lanterns[i];
       const lx = lantern.pos[0], ly = lantern.pos[1], lz = lantern.pos[2];
-      // Stone base plinth & wooden post
-      this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 0.4, lz).scale(1.3, 0.8, 1.3), PALETTE.lanternOff);
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(lx, ly + 1.4, lz).scale(0.32, 1.3, 0.32), PALETTE.wood);
+      this.drawMesh(this.meshes.cube, sm.setTRS(lx, ly + 0.4, lz, 1.3, 0.8, 1.3), PALETTE.lanternOff);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(lx, ly + 1.4, lz, 0.32, 1.3, 0.32), PALETTE.wood);
 
       if (lantern.lit) {
         const fuelRatio = Math.max(0, Math.min(1, lantern.fuelUnits / 6000));
         const isLowFuel = lantern.fuelUnits < 1800;
-        const blinkOn = !isLowFuel || Math.floor(timeSec * 2.0) % 2 === 0; // 1 Hz blink
+        const blinkOn = reducedMotion || !isLowFuel || Math.floor(timeSec * 2.0) % 2 === 0;
 
         const coreColor = blinkOn ? PALETTE.lanternCore : PALETTE.lanternOff;
         const rimColor = blinkOn ? PALETTE.lanternLit : PALETTE.lanternOff;
         const glowEmissive = blinkOn ? 0.9 : 0.1;
 
-        this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 2.4, lz).scale(0.9, 0.95, 0.9), coreColor, glowEmissive);
-        this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 3.05, lz).scale(1.85, 0.55, 1.85), rimColor, blinkOn ? 0.35 : 0.0);
-        this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 3.45, lz).scale(1.1, 0.45, 1.1), PALETTE.wood);
-        this.drawMesh(this.meshes.sphere, new Mat4().translate(lx, ly + 3.78, lz).scale(0.28, 0.28, 0.28), PALETTE.goldUi, blinkOn ? 0.8 : 0.1);
+        this.drawMesh(this.meshes.cube, sm.setTRS(lx, ly + 2.4, lz, 0.9, 0.95, 0.9), coreColor, glowEmissive);
+        this.drawMesh(this.meshes.cone, sm.setTRS(lx, ly + 3.05, lz, 1.85, 0.55, 1.85), rimColor, blinkOn ? 0.35 : 0.0);
+        this.drawMesh(this.meshes.cone, sm.setTRS(lx, ly + 3.45, lz, 1.1, 0.45, 1.1), PALETTE.wood);
+        this.drawMesh(this.meshes.sphere, sm.setTRS(lx, ly + 3.78, lz, 0.28, 0.28, 0.28), PALETTE.goldUi, blinkOn ? 0.8 : 0.1);
 
-        // Safe zone ring active only when fuel >= 30
         if (!isLowFuel) {
           const ringPulse = 5.95 + 0.1 * Math.sin(timeSec * 2.5);
-          this.drawMesh(this.meshes.ring, new Mat4().translate(lx, ly + 0.06, lz).scale(ringPulse, 1.0, ringPulse), PALETTE.lanternLit, 0.6);
+          this.drawMesh(this.meshes.ring, sm.setTRS(lx, ly + 0.06, lz, ringPulse, 1.0, ringPulse), PALETTE.lanternLit, 0.6);
         }
 
-        // Fuel Bar floating above lit lantern (blinks at 1 Hz when fuel < 30)
         if (blinkOn) {
           const barW = 1.6;
           const fillW = Math.max(0.05, barW * fuelRatio);
           const barColor = isLowFuel
             ? (colorblind ? PALETTE.dangerColorblind : PALETTE.danger)
             : PALETTE.lanternCore;
-          this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 4.35, lz).scale(barW + 0.08, 0.18, 0.08), PALETTE.shadeBody, 0.2);
-          this.drawMesh(this.meshes.cube, new Mat4().translate(lx - (barW - fillW) / 2, ly + 4.35, lz).scale(fillW, 0.14, 0.12), barColor, 0.95);
+          this.drawMesh(this.meshes.cube, sm.setTRS(lx, ly + 4.35, lz, barW + 0.08, 0.18, 0.08), PALETTE.shadeBody, 0.2);
+          this.drawMesh(this.meshes.cube, sm.setTRS(lx - (barW - fillW) / 2, ly + 4.35, lz, fillW, 0.14, 0.12), barColor, 0.95);
         }
       } else {
-        // Unlit lantern: vertically compressed by 20% + visible dark paper tears
-        this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 2.3, lz).scale(0.95, 0.76, 0.95), PALETTE.lanternOff, 0.05);
-        this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 2.3, lz + 0.48).rotateY(0.15).scale(0.42, 0.22, 0.05), PALETTE.shadeBody, 0.0);
-        this.drawMesh(this.meshes.cube, new Mat4().translate(lx + 0.48, ly + 2.25, lz).scale(0.05, 0.28, 0.38), PALETTE.shadeBody, 0.0);
-        this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 2.84, lz).scale(1.85, 0.44, 1.85), PALETTE.lanternOff, 0.0);
-        this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 3.16, lz).scale(1.1, 0.36, 1.1), PALETTE.wood);
+        this.drawMesh(this.meshes.cube, sm.setTRS(lx, ly + 2.3, lz, 0.95, 0.76, 0.95), PALETTE.lanternOff, 0.05);
+        this.drawMesh(this.meshes.cube, sm.setTRS(lx, ly + 2.3, lz + 0.48, 0.42, 0.22, 0.05, 0.15), PALETTE.shadeBody, 0.0);
+        this.drawMesh(this.meshes.cube, sm.setTRS(lx + 0.48, ly + 2.25, lz, 0.05, 0.28, 0.38), PALETTE.shadeBody, 0.0);
+        this.drawMesh(this.meshes.cone, sm.setTRS(lx, ly + 2.84, lz, 1.85, 0.44, 1.85), PALETTE.lanternOff, 0.0);
+        this.drawMesh(this.meshes.cone, sm.setTRS(lx, ly + 3.16, lz, 1.1, 0.36, 1.1), PALETTE.wood);
       }
     }
 
-    // 3. Render Fireflies / Motes (Core #FFF6C2 + Soft Halo #FFE58A)
-    for (const mote of engine.motes) {
-      const bob = Math.sin(timeSec * 3.5 + mote.pos[0]) * 0.18 + 0.5;
-      const swayX = Math.cos(timeSec * 2.2 + mote.pos[2]) * 0.1;
-      const mx = mote.pos[0] + swayX, my = mote.pos[1] + bob, mz = mote.pos[2];
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(mx, my, mz).scale(0.3, 0.3, 0.3), PALETTE.moteCore, 0.98);
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(mx, my, mz).scale(0.58, 0.58, 0.58), PALETTE.moteHalo, 0.45);
+    const shadeRimColor = colorblind ? PALETTE.shadeRimColorblind : PALETTE.shadeRim;
+
+    // 3 & 5. Instanced Fast Path for Motes & Ink Shades (reduces ~800 draw calls to 5 GPU draw calls)
+    if (this.instExt && (engine.motes.length > 0 || engine.shades.length > 0)) {
+      this.beginInstancedPass(count, playerGlow, pulseStrength, ambientIntensity);
+
+      if (engine.motes.length > 0) {
+        let mc = 0;
+        for (let i = 0; i < engine.motes.length; i++) {
+          const mote = engine.motes[i];
+          const bob = Math.sin(timeSec * 3.5 + mote.pos[0]) * 0.18 + 0.5;
+          const swayX = Math.cos(timeSec * 2.2 + mote.pos[2]) * 0.1;
+          mc = this.pushInstance(mc, mote.pos[0] + swayX, mote.pos[1] + bob, mote.pos[2], 0, 0.3, 0.3, 0.3, PALETTE.moteCore);
+          if (mc === this.MAX_INSTANCES) { this.drawInstancedBatch(this.meshes.sphereLow, mc, 0.98); mc = 0; }
+        }
+        this.drawInstancedBatch(this.meshes.sphereLow, mc, 0.98);
+
+        mc = 0;
+        for (let i = 0; i < engine.motes.length; i++) {
+          const mote = engine.motes[i];
+          const bob = Math.sin(timeSec * 3.5 + mote.pos[0]) * 0.18 + 0.5;
+          const swayX = Math.cos(timeSec * 2.2 + mote.pos[2]) * 0.1;
+          mc = this.pushInstance(mc, mote.pos[0] + swayX, mote.pos[1] + bob, mote.pos[2], 0, 0.58, 0.58, 0.58, PALETTE.moteHalo);
+          if (mc === this.MAX_INSTANCES) { this.drawInstancedBatch(this.meshes.sphereLow, mc, 0.45); mc = 0; }
+        }
+        this.drawInstancedBatch(this.meshes.sphereLow, mc, 0.45);
+      }
+
+      if (engine.shades.length > 0) {
+        let bc = 0;
+        for (let i = 0; i < engine.shades.length; i++) {
+          const shade = engine.shades[i];
+          if (shade.state === 'stunned') continue;
+          const sx = shade.pos[0], sy = shade.pos[1], sz = shade.pos[2];
+          const isSpawning = shade.state === 'spawning';
+          const isRecoil = shade.state === 'recoil';
+          const isElderVariant = !benchmarkMode && (parseInt(String(shade.id).slice(1), 10) % 2 === 0);
+          const hover = isSpawning ? -0.35 : Math.sin(timeSec * 4.0 + sx) * 0.1;
+          const scx = isSpawning ? 0.6 : isRecoil ? 0.9 : isElderVariant ? 1.15 : 1.05;
+          const scy = isSpawning ? 0.6 : isRecoil ? 1.15 : isElderVariant ? 1.45 : 1.35;
+          bc = this.pushInstance(bc, sx, sy + hover, sz, 0, scx, scy, scx, PALETTE.shadeBody);
+          if (bc === this.MAX_INSTANCES) { this.drawInstancedBatch(this.meshes.sphereLow, bc, 0.05); bc = 0; }
+        }
+        this.drawInstancedBatch(this.meshes.sphereLow, bc, 0.05);
+
+        let stc = 0;
+        for (let i = 0; i < engine.shades.length; i++) {
+          const shade = engine.shades[i];
+          if (shade.state !== 'stunned') continue;
+          stc = this.pushInstance(stc, shade.pos[0], shade.pos[1] - 0.15, shade.pos[2], 0, 1.3, 0.55, 1.3, PALETTE.shadeStun);
+          if (stc === this.MAX_INSTANCES) { this.drawInstancedBatch(this.meshes.sphereLow, stc, 0.25); stc = 0; }
+        }
+        this.drawInstancedBatch(this.meshes.sphereLow, stc, 0.25);
+
+        let rc = 0;
+        for (let i = 0; i < engine.shades.length; i++) {
+          const shade = engine.shades[i];
+          const rScale = shade.state === 'drain' ? 1.15 : 0.85;
+          rc = this.pushInstance(rc, shade.pos[0], shade.pos[1] - 0.65, shade.pos[2], 0, rScale, 1, rScale, shadeRimColor);
+          if (rc === this.MAX_INSTANCES) { this.drawInstancedBatch(this.meshes.ring, rc, 0.85); rc = 0; }
+        }
+        this.drawInstancedBatch(this.meshes.ring, rc, 0.85);
+
+        let ec = 0;
+        const ppx = engine.player.pos[0], ppz = engine.player.pos[2];
+        for (let i = 0; i < engine.shades.length; i++) {
+          const shade = engine.shades[i];
+          const sx = shade.pos[0], sy = shade.pos[1], sz = shade.pos[2];
+          const hover = shade.state === 'stunned' ? -0.15 : shade.state === 'spawning' ? -0.35 : Math.sin(timeSec * 4.0 + sx) * 0.1;
+          const sYaw = Math.atan2(ppx - sx, ppz - sz);
+          ec = this.pushInstance(ec, sx + Math.sin(sYaw) * 0.44, sy + hover + 0.2, sz + Math.cos(sYaw) * 0.44, sYaw, 0.34, 0.1, 0.1, shadeRimColor);
+          if (ec === this.MAX_INSTANCES) { this.drawInstancedBatch(this.meshes.cube, ec, 0.95); ec = 0; }
+        }
+        this.drawInstancedBatch(this.meshes.cube, ec, 0.95);
+      }
+
+      this.endInstancedPass();
+
+      if (!benchmarkMode) {
+        for (let i = 0; i < engine.shades.length; i++) {
+          const shade = engine.shades[i];
+          const sx = shade.pos[0], sy = shade.pos[1], sz = shade.pos[2];
+          const isStunned = shade.state === 'stunned';
+          const isSpawning = shade.state === 'spawning';
+          const isDraining = shade.state === 'drain';
+          const isElder = !isStunned && (parseInt(String(shade.id).slice(1), 10) % 2 === 0);
+          const hover = isStunned ? -0.15 : isSpawning ? -0.35 : Math.sin(timeSec * 4.0 + sx) * 0.1;
+          for (let w = 0; w < 3; w++) {
+            const wa = timeSec * (isStunned ? 5.5 : isDraining ? 6.0 : 3.0) + (w * Math.PI * 2) / 3;
+            const wr = isStunned ? 0.55 : 0.68;
+            const wy = isStunned ? sy + 0.55 : sy + hover + Math.sin(wa * 2) * 0.2;
+            const wCol = isStunned ? PALETTE.goldUi : (isDraining ? shadeRimColor : PALETTE.shadeBody);
+            this.drawMesh(this.meshes.sphereLow, sm.setTRS(sx + Math.cos(wa) * wr, wy, sz + Math.sin(wa) * wr, 0.22, 0.22, 0.22), wCol, isStunned || isDraining ? 0.85 : 0.1);
+          }
+          if (isDraining && shade.targetLanternId) {
+            const targetL = engine.lanterns.find(l => l.id === shade.targetLanternId);
+            if (targetL) {
+              for (let b = 0; b < 4; b++) {
+                const bt = (timeSec * 1.8 + b * 0.25) % 1.0;
+                const bx = targetL.pos[0] + (sx - targetL.pos[0]) * bt;
+                const by = (targetL.pos[1] + 2.2) + (sy + hover - (targetL.pos[1] + 2.2)) * bt;
+                const bz = targetL.pos[2] + (sz - targetL.pos[2]) * bt;
+                this.drawMesh(this.meshes.sphereLow, sm.setTRS(bx, by, bz, 0.22, 0.22, 0.22), shadeRimColor, 0.95);
+              }
+            }
+          }
+          if (isElder) {
+            this.drawMesh(this.meshes.ring, sm.setTRS(sx, sy + hover + 0.25, sz, 0.95, 1, 0.95, -timeSec * 2.5), shadeRimColor, 0.8);
+            const hornY = sy + hover + 0.68;
+            this.drawMesh(this.meshes.cone, sm.setTRS(sx - 0.28, hornY, sz, 0.18, 0.55, 0.18), PALETTE.shadeBody, 0.1);
+            this.drawMesh(this.meshes.cone, sm.setTRS(sx + 0.28, hornY, sz, 0.18, 0.55, 0.18), PALETTE.shadeBody, 0.1);
+          }
+        }
+      }
+    } else {
+      for (let i = 0; i < engine.motes.length; i++) {
+        const mote = engine.motes[i];
+        const bob = Math.sin(timeSec * 3.5 + mote.pos[0]) * 0.18 + 0.5;
+        const swayX = Math.cos(timeSec * 2.2 + mote.pos[2]) * 0.1;
+        this.drawMesh(this.meshes.sphereLow, sm.setTRS(mote.pos[0] + swayX, mote.pos[1] + bob, mote.pos[2], 0.3, 0.3, 0.3), PALETTE.moteCore, 0.98);
+        this.drawMesh(this.meshes.sphereLow, sm.setTRS(mote.pos[0] + swayX, mote.pos[1] + bob, mote.pos[2], 0.58, 0.58, 0.58), PALETTE.moteHalo, 0.45);
+      }
+      for (let i = 0; i < engine.shades.length; i++) {
+        const shade = engine.shades[i];
+        const sx = shade.pos[0], sy = shade.pos[1], sz = shade.pos[2];
+        const isStunned = shade.state === 'stunned';
+        const isSpawning = shade.state === 'spawning';
+        const hover = isStunned ? -0.15 : isSpawning ? -0.35 : Math.sin(timeSec * 4.0 + sx) * 0.1;
+        this.drawMesh(this.meshes.sphereLow, sm.setTRS(sx, sy + hover, sz, isStunned ? 1.3 : 1.05, isStunned ? 0.55 : 1.35, isStunned ? 1.3 : 1.05), isStunned ? PALETTE.shadeStun : PALETTE.shadeBody, isStunned ? 0.25 : 0.05);
+        this.drawMesh(this.meshes.ring, sm.setTRS(sx, sy - 0.65, sz, 0.85, 1, 0.85), shadeRimColor, 0.85);
+        const sYaw = Math.atan2(engine.player.pos[0] - sx, engine.player.pos[2] - sz);
+        this.drawMesh(this.meshes.cube, sm.setTRS(sx + Math.sin(sYaw) * 0.44, sy + hover + 0.2, sz + Math.cos(sYaw) * 0.44, 0.34, 0.1, 0.1, sYaw), shadeRimColor, 0.95);
+      }
     }
 
     // 4. Render Wind Charms (Bùa Gió: #C8102E + gold #F2C14E)
-    for (const charm of engine.charms) {
+    for (let i = 0; i < engine.charms.length; i++) {
+      const charm = engine.charms[i];
       if (!charm.available) continue;
       const mapC = engine.map.charms.find(c => c.id === charm.id);
       if (!mapC) continue;
       const cx = mapC.pos[0], cy = mapC.pos[1] + 0.85 + Math.sin(timeSec * 3.0) * 0.15, cz = mapC.pos[2];
-      this.drawMesh(this.meshes.cube, new Mat4().translate(cx, cy, cz).rotateY(timeSec * 2.5).scale(0.55, 0.8, 0.14), PALETTE.goldUi, 0.65);
-      this.drawMesh(this.meshes.cube, new Mat4().translate(cx, cy, cz).rotateY(timeSec * 2.5).scale(0.4, 0.65, 0.18), PALETTE.mayScarf, 0.5);
-    }
-
-    // 5. Render Ink Shadows + Creative Variant ("Bóng Mực Tinh Anh" on even IDs) + Drain Siphon Beam
-    const shadeRimColor = colorblind ? PALETTE.shadeRimColorblind : PALETTE.shadeRim;
-    for (const shade of engine.shades) {
-      const sx = shade.pos[0], sy = shade.pos[1], sz = shade.pos[2];
-      const isStunned = shade.state === 'stunned';
-      const isSpawning = shade.state === 'spawning';
-      const isDraining = shade.state === 'drain';
-      const isRecoil = shade.state === 'recoil';
-      const idMatch = String(shade.id).match(/(\d+)$/);
-      const isElderVariant = idMatch ? parseInt(idMatch[1], 10) % 2 === 0 : false;
-
-      const hover = isStunned ? -0.15 : isSpawning ? -0.35 : Math.sin(timeSec * 4.0 + sx) * 0.1;
-      const sc = isStunned
-        ? [1.3, 0.55, 1.3]
-        : isSpawning
-          ? [0.6, 0.6, 0.6]
-          : isRecoil
-            ? [0.9, 1.15, 0.9]
-            : isElderVariant
-              ? [1.15, 1.45, 1.15]
-              : [1.05, 1.35, 1.05];
-      const bodyCol = isStunned ? PALETTE.shadeStun : PALETTE.shadeBody;
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(sx, sy + hover, sz).scale(sc[0], sc[1], sc[2]), bodyCol, isStunned ? 0.25 : 0.05);
-      this.drawMesh(this.meshes.ring, new Mat4().translate(sx, sy - 0.65, sz).scale(isDraining ? 1.15 : 0.85, 1, isDraining ? 1.15 : 0.85), shadeRimColor, 0.85);
-
-      // Creative Variant: Bóng Mực Tinh Anh (twin curved ink horns + elevated halo ring)
-      if (isElderVariant && !isStunned) {
-        const hornY = sy + hover + 0.68;
-        this.drawMesh(this.meshes.cone, new Mat4().translate(sx - 0.28, hornY, sz).scale(0.18, 0.55, 0.18), PALETTE.shadeBody, 0.1);
-        this.drawMesh(this.meshes.cone, new Mat4().translate(sx + 0.28, hornY, sz).scale(0.18, 0.55, 0.18), PALETTE.shadeBody, 0.1);
-        this.drawMesh(this.meshes.ring, new Mat4().translate(sx, sy + hover + 0.25, sz).rotateY(-timeSec * 2.5).scale(0.95, 1, 0.95), shadeRimColor, 0.8);
-      }
-
-      // Orbiting ink wisps or dizzy stun stars
-      for (let w = 0; w < 3; w++) {
-        const wa = timeSec * (isStunned ? 5.5 : isDraining ? 6.0 : 3.0) + (w * Math.PI * 2) / 3;
-        const wr = isStunned ? 0.55 : 0.68;
-        const wy = isStunned ? sy + 0.55 : sy + hover + Math.sin(wa * 2) * 0.2;
-        const wCol = isStunned ? PALETTE.goldUi : (isDraining ? shadeRimColor : PALETTE.shadeBody);
-        this.drawMesh(this.meshes.sphere, new Mat4().translate(sx + Math.cos(wa) * wr, wy, sz + Math.sin(wa) * wr).scale(0.22, 0.22, 0.22), wCol, isStunned || isDraining ? 0.85 : 0.1);
-      }
-
-      // Drain Siphon Beam: pulsing orbs flowing from target low-fuel lantern to draining Shade
-      if (isDraining && shade.targetLanternId) {
-        const targetL = engine.lanterns.find(l => l.id === shade.targetLanternId);
-        if (targetL) {
-          for (let b = 0; b < 4; b++) {
-            const bt = (timeSec * 1.8 + b * 0.25) % 1.0;
-            const bx = targetL.pos[0] + (sx - targetL.pos[0]) * bt;
-            const by = (targetL.pos[1] + 2.2) + (sy + hover - (targetL.pos[1] + 2.2)) * bt;
-            const bz = targetL.pos[2] + (sz - targetL.pos[2]) * bt;
-            this.drawMesh(this.meshes.sphere, new Mat4().translate(bx, by, bz).scale(0.22, 0.22, 0.22), shadeRimColor, 0.95);
-          }
-        }
-      }
-
-      // Eyes facing player
-      const sYaw = Math.atan2(engine.player.pos[0] - sx, engine.player.pos[2] - sz);
-      const ex = sx + Math.sin(sYaw) * 0.44;
-      const ez = sz + Math.cos(sYaw) * 0.44;
-      this.drawMesh(this.meshes.cube, new Mat4().translate(ex, sy + hover + 0.2, ez).rotateY(sYaw).scale(0.34, 0.1, 0.1), shadeRimColor, 0.95);
+      this.drawMesh(this.meshes.cube, sm.setTRS(cx, cy, cz, 0.55, 0.8, 0.14, timeSec * 2.5), PALETTE.goldUi, 0.65);
+      this.drawMesh(this.meshes.cube, sm.setTRS(cx, cy, cz, 0.4, 0.65, 0.18, timeSec * 2.5), PALETTE.mayScarf, 0.5);
     }
 
     // 6. Render Drifters (Gió Lạc #8FA3B8) with 3-segment undulating silk ribbon trail
-    for (const drifter of engine.drifters) {
+    for (let i = 0; i < engine.drifters.length; i++) {
+      const drifter = engine.drifters[i];
       if (drifter.state === 'removed') continue;
       const dx = drifter.pos[0], dy = drifter.pos[1] + Math.sin(timeSec * 5.0) * 0.2, dz = drifter.pos[2];
-      this.drawMesh(
-        this.meshes.cube,
-        new Mat4().translate(dx, dy, dz).rotateY(timeSec * 4.0).scale(1.3, 0.16, 0.42),
-        PALETTE.drifter,
-        0.65
-      );
+      this.drawMesh(this.meshes.cube, sm.setTRS(dx, dy, dz, 1.3, 0.16, 0.42, timeSec * 4.0), PALETTE.drifter, 0.65);
       for (let t = 1; t <= 3; t++) {
         const ta = timeSec * 4.0 - t * 0.55;
         const tx = dx - Math.cos(ta) * t * 0.35;
         const tz = dz - Math.sin(ta) * t * 0.35;
         const ty = dy + Math.sin(timeSec * 6.0 - t) * 0.12;
-        this.drawMesh(this.meshes.cube, new Mat4().translate(tx, ty, tz).rotateY(ta).scale(0.55 - t * 0.1, 0.12, 0.3 - t * 0.05), PALETTE.drifter, 0.45);
+        this.drawMesh(this.meshes.cube, sm.setTRS(tx, ty, tz, 0.55 - t * 0.1, 0.12, 0.3 - t * 0.05, ta), PALETTE.drifter, 0.45);
       }
       if (drifter.stolen > 0) {
-        this.drawMesh(this.meshes.sphere, new Mat4().translate(dx, dy + 0.35, dz).scale(0.32, 0.32, 0.32), PALETTE.moteCore, 0.9);
+        this.drawMesh(this.meshes.sphereLow, sm.setTRS(dx, dy + 0.35, dz, 0.32, 0.32, 0.32), PALETTE.moteCore, 0.9);
       }
     }
 
@@ -719,7 +937,7 @@ export class WebGLRenderer {
         continue;
       }
       const r = 0.6 + (w.age / w.maxAge) * 5.0;
-      this.drawMesh(this.meshes.ring, new Mat4().translate(w.pos[0], w.pos[1] + 0.2, w.pos[2]).scale(r, 1, r), PALETTE.lanternCore, 0.95);
+      this.drawMesh(this.meshes.ring, sm.setTRS(w.pos[0], w.pos[1] + 0.2, w.pos[2], r, 1, r), PALETTE.lanternCore, 0.95);
     }
 
     for (let i = this.particles.length - 1; i >= 0; i--) {
@@ -736,7 +954,7 @@ export class WebGLRenderer {
         p.vel[1] -= 4.0 * activeDt;
       }
       const s = p.size * (1.0 - 0.6 * (p.age / p.maxAge));
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(p.pos[0], p.pos[1], p.pos[2]).scale(s, s, s), p.color, 0.95);
+      this.drawMesh(this.meshes.sphereLow, sm.setTRS(p.pos[0], p.pos[1], p.pos[2], s, s, s), p.color, 0.95);
     }
 
     if (activeDt > 0 && engine.player.dashTicks > 0 && engine.player.respawnTicks === 0) {
@@ -751,7 +969,7 @@ export class WebGLRenderer {
         continue;
       }
       const k = 1.0 - tr.age / tr.maxAge;
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(tr.pos[0], tr.pos[1] + 0.72, tr.pos[2]).scale(0.45 * k, 0.95 * k, 0.45 * k), PALETTE.lanternCore, 0.75);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(tr.pos[0], tr.pos[1] + 0.72, tr.pos[2], 0.45 * k, 0.95 * k, 0.45 * k), PALETTE.lanternCore, 0.75);
     }
 
     // 8. Wind Leaves Visuals on Night 3
@@ -763,33 +981,31 @@ export class WebGLRenderer {
         const ox = engine.player.pos[0] + Math.cos(wr) * (t - 20) + Math.sin(i * 2.1) * 12;
         const oz = engine.player.pos[2] + Math.sin(wr) * (t - 20) + Math.cos(i * 1.7) * 12;
         const oy = engine.player.pos[1] + 1.0 + Math.sin(timeSec * 4 + i) * 0.8;
-        this.drawMesh(this.meshes.cube, new Mat4().translate(ox, oy, oz).rotateY(timeSec * 3 + i).scale(0.28, 0.08, 0.16), PALETTE.goldUi, 0.6);
+        this.drawMesh(this.meshes.cube, sm.setTRS(ox, oy, oz, 0.28, 0.08, 0.16, timeSec * 3 + i), PALETTE.goldUi, 0.6);
       }
     }
 
-    // 9. Creative Side Character: Ông Đăng (Elder Lantern Keeper NPC near spawn hub)
-    {
+    // 9. Creative Side Character: Ông Đăng (disabled in benchmarkMode)
+    if (!benchmarkMode) {
       const ox = 2.8, oz = engine.night === 3 ? -14.5 : -2.5;
       const oy = 0;
       const nod = Math.sin(timeSec * 2.0) * 0.05;
       const distToMay = Math.hypot(engine.player.pos[0] - ox, engine.player.pos[2] - oz);
       const staffRaise = distToMay < 5.0 ? 0.25 + 0.1 * Math.sin(timeSec * 5.0) : 0;
-      // Sage Robe & White Beard
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(ox, oy + 0.82, oz).scale(0.58, 1.15, 0.58), PALETTE.wood);
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(ox, oy + 1.58 + nod, oz).scale(0.42, 0.42, 0.42), [0.92, 0.78, 0.68]);
-      this.drawMesh(this.meshes.cone, new Mat4().translate(ox, oy + 1.38 + nod, oz + 0.18).scale(0.24, -0.36, 0.18), PALETTE.mayRobe);
-      this.drawMesh(this.meshes.cone, new Mat4().translate(ox, oy + 1.88 + nod, oz).scale(1.1, 0.44, 1.1), PALETTE.sand);
-      // Bamboo Staff with hanging Gourd Lantern
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(ox - 0.55, oy + 1.05 + staffRaise, oz + 0.2).scale(0.08, 2.1, 0.08), PALETTE.wood);
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(ox - 0.55, oy + 2.15 + staffRaise, oz + 0.2).scale(0.28, 0.34, 0.28), PALETTE.lanternLit, 0.9);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(ox, oy + 0.82, oz, 0.58, 1.15, 0.58), PALETTE.wood);
+      this.drawMesh(this.meshes.sphere, sm.setTRS(ox, oy + 1.58 + nod, oz, 0.42, 0.42, 0.42), [0.92, 0.78, 0.68]);
+      this.drawMesh(this.meshes.cone, sm.setTRS(ox, oy + 1.38 + nod, oz + 0.18, 0.24, -0.36, 0.18), PALETTE.mayRobe);
+      this.drawMesh(this.meshes.cone, sm.setTRS(ox, oy + 1.88 + nod, oz, 1.1, 0.44, 1.1), PALETTE.sand);
+      this.drawMesh(this.meshes.cylinder, sm.setTRS(ox - 0.55, oy + 1.05 + staffRaise, oz + 0.2, 0.08, 2.1, 0.08), PALETTE.wood);
+      this.drawMesh(this.meshes.sphere, sm.setTRS(ox - 0.55, oy + 2.15 + staffRaise, oz + 0.2, 0.28, 0.34, 0.28), PALETTE.lanternLit, 0.9);
       if (distToMay < 5.0) {
-        this.drawMesh(this.meshes.ring, new Mat4().translate(ox, oy + 0.05, oz).scale(1.1, 1, 1.1), PALETTE.goldUi, 0.6);
+        this.drawMesh(this.meshes.ring, sm.setTRS(ox, oy + 0.05, oz, 1.1, 1, 1.1), PALETTE.goldUi, 0.6);
       }
     }
 
     // 10. Render Hero Mây + Creative Spirit Guide "Đốm Tiên"
     if (engine.player.respawnTicks === 0) {
-      const invulnVisible = engine.player.invulnTicks === 0 || Math.floor(engine.player.invulnTicks / 4) % 2 === 0;
+      const invulnVisible = reducedMotion || engine.player.invulnTicks === 0 || Math.floor(engine.player.invulnTicks / 4) % 2 === 0;
       if (invulnVisible) {
         const px = engine.player.pos[0], py = engine.player.pos[1], pz = engine.player.pos[2];
         const yaw = Math.atan2(engine.player.facing[0], engine.player.facing[1]);
@@ -799,55 +1015,50 @@ export class WebGLRenderer {
         const walkBob = moving ? Math.abs(Math.sin(walkPhase)) * 0.08 : 0;
         const stride = moving ? Math.sin(walkPhase) * 0.22 : 0;
 
-        // Animated feet
         const fx = Math.sin(yaw), fz = Math.cos(yaw);
         const rx = fz, rz = -fx;
-        this.drawMesh(this.meshes.sphere, new Mat4().translate(px + rx * 0.14 + fx * stride, py + 0.14, pz + rz * 0.14 + fz * stride).scale(0.2, 0.18, 0.26), PALETTE.wood);
-        this.drawMesh(this.meshes.sphere, new Mat4().translate(px - rx * 0.14 - fx * stride, py + 0.14, pz - rz * 0.14 - fz * stride).scale(0.2, 0.18, 0.26), PALETTE.wood);
+        this.drawMesh(this.meshes.sphere, sm.setTRS(px + rx * 0.14 + fx * stride, py + 0.14, pz + rz * 0.14 + fz * stride, 0.2, 0.18, 0.26), PALETTE.wood);
+        this.drawMesh(this.meshes.sphere, sm.setTRS(px - rx * 0.14 - fx * stride, py + 0.14, pz - rz * 0.14 - fz * stride, 0.2, 0.18, 0.26), PALETTE.wood);
 
-        // Cream Robe (#E8E2D0)
-        this.drawMesh(this.meshes.cylinder, new Mat4().translate(px, py + 0.72 + walkBob, pz).scale(0.52, 1.0, 0.52), PALETTE.mayRobe);
-        // Crimson Scarf Collar & 2-Segment Flowing Tail (#C8102E)
-        this.drawMesh(this.meshes.cylinder, new Mat4().translate(px, py + 1.22 + walkBob, pz).scale(0.42, 0.16, 0.42), PALETTE.mayScarf);
+        this.drawMesh(this.meshes.cylinder, sm.setTRS(px, py + 0.72 + walkBob, pz, 0.52, 1.0, 0.52), PALETTE.mayRobe);
+        this.drawMesh(this.meshes.cylinder, sm.setTRS(px, py + 1.22 + walkBob, pz, 0.42, 0.16, 0.42), PALETTE.mayScarf);
         const tailWave = Math.sin(timeSec * (moving ? 12.0 : 5.0)) * (moving ? 0.14 : 0.06);
         const tx1 = px - fx * 0.34 + rx * tailWave;
         const tz1 = pz - fz * 0.34 + rz * tailWave;
-        this.drawMesh(this.meshes.cube, new Mat4().translate(tx1, py + 1.12 + walkBob, tz1).rotateY(yaw).scale(0.18, 0.28, 0.08), PALETTE.mayScarf);
+        this.drawMesh(this.meshes.cube, sm.setTRS(tx1, py + 1.12 + walkBob, tz1, 0.18, 0.28, 0.08, yaw), PALETTE.mayScarf);
         const tx2 = px - fx * (0.44 + (moving ? 0.12 : 0.0)) + rx * tailWave * 1.7;
         const tz2 = pz - fz * (0.44 + (moving ? 0.12 : 0.0)) + rz * tailWave * 1.7;
-        this.drawMesh(this.meshes.cube, new Mat4().translate(tx2, py + 0.92 + walkBob, tz2).rotateY(yaw).scale(0.15, 0.22, 0.07), PALETTE.mayScarf);
+        this.drawMesh(this.meshes.cube, sm.setTRS(tx2, py + 0.92 + walkBob, tz2, 0.15, 0.22, 0.07, yaw), PALETTE.mayScarf);
 
-        // Head & Conical Hat (Nón lá)
-        this.drawMesh(this.meshes.sphere, new Mat4().translate(px, py + 1.46 + walkBob, pz).scale(0.44, 0.44, 0.44), [0.92, 0.78, 0.68]);
-        this.drawMesh(this.meshes.cone, new Mat4().translate(px, py + 1.80 + walkBob, pz).scale(1.18, 0.48, 1.18), PALETTE.sand);
+        this.drawMesh(this.meshes.sphere, sm.setTRS(px, py + 1.46 + walkBob, pz, 0.44, 0.44, 0.44), [0.92, 0.78, 0.68]);
+        this.drawMesh(this.meshes.cone, sm.setTRS(px, py + 1.80 + walkBob, pz, 1.18, 0.48, 1.18), PALETTE.sand);
 
-        // Hanging mini-lantern (glow & halo scale with carried/capacity)
         const sway = Math.sin(timeSec * 6.0) * 0.06;
         const lx = px + Math.sin(yaw + 0.75) * 0.6 + sway;
         const lz = pz + Math.cos(yaw + 0.75) * 0.6;
         const lanternScale = 1.0 + 0.35 * carryFrac;
-        this.drawMesh(this.meshes.cube, new Mat4().translate(lx, py + 1.38 + walkBob, lz).scale(0.22 * lanternScale, 0.28 * lanternScale, 0.22 * lanternScale), PALETTE.lanternLit, 0.95);
-        this.drawMesh(this.meshes.sphere, new Mat4().translate(lx, py + 1.38 + walkBob, lz).scale(0.16 * lanternScale, 0.16 * lanternScale, 0.16 * lanternScale), PALETTE.lanternCore, 1.0);
+        this.drawMesh(this.meshes.cube, sm.setTRS(lx, py + 1.38 + walkBob, lz, 0.22 * lanternScale, 0.28 * lanternScale, 0.22 * lanternScale), PALETTE.lanternLit, 0.95);
+        this.drawMesh(this.meshes.sphere, sm.setTRS(lx, py + 1.38 + walkBob, lz, 0.16 * lanternScale, 0.16 * lanternScale, 0.16 * lanternScale), PALETTE.lanternCore, 1.0);
 
-        // Wind Charm foot aura
         if (engine.player.charmTicks > 0) {
-          this.drawMesh(this.meshes.ring, new Mat4().translate(px, py + 0.08, pz).rotateY(timeSec * 4.0).scale(1.05, 1, 1.05), PALETTE.mayScarf, 0.85);
-          this.drawMesh(this.meshes.ring, new Mat4().translate(px, py + 0.12, pz).rotateY(-timeSec * 4.0).scale(1.22, 1, 1.22), PALETTE.goldUi, 0.85);
+          this.drawMesh(this.meshes.ring, sm.setTRS(px, py + 0.08, pz, 1.05, 1, 1.05, timeSec * 4.0), PALETTE.mayScarf, 0.85);
+          this.drawMesh(this.meshes.ring, sm.setTRS(px, py + 0.12, pz, 1.22, 1, 1.22, -timeSec * 4.0), PALETTE.goldUi, 0.85);
         }
 
-        // Creative Spirit Guide "Đốm Tiên" orbiting Mây & leaning toward nearest urgent lantern
-        const urgentLanterns = engine.lanterns.filter(l => !l.lit || l.fuelUnits < 1800);
-        let guideAngle = timeSec * 2.4;
-        if (urgentLanterns.length > 0) {
-          urgentLanterns.sort((a, b) => Math.hypot(a.pos[0] - px, a.pos[2] - pz) - Math.hypot(b.pos[0] - px, b.pos[2] - pz));
-          const u = urgentLanterns[0];
-          guideAngle = Math.atan2(u.pos[2] - pz, u.pos[0] - px) + Math.sin(timeSec * 3.0) * 0.35;
+        if (!benchmarkMode) {
+          const urgentLanterns = engine.lanterns.filter(l => !l.lit || l.fuelUnits < 1800);
+          let guideAngle = timeSec * 2.4;
+          if (urgentLanterns.length > 0) {
+            urgentLanterns.sort((a, b) => Math.hypot(a.pos[0] - px, a.pos[2] - pz) - Math.hypot(b.pos[0] - px, b.pos[2] - pz));
+            const u = urgentLanterns[0];
+            guideAngle = Math.atan2(u.pos[2] - pz, u.pos[0] - px) + Math.sin(timeSec * 3.0) * 0.35;
+          }
+          const gx = px + Math.cos(guideAngle) * 1.15;
+          const gz = pz + Math.sin(guideAngle) * 1.15;
+          const gy = py + 1.65 + Math.sin(timeSec * 4.5) * 0.18;
+          this.drawMesh(this.meshes.sphereLow, sm.setTRS(gx, gy, gz, 0.22, 0.22, 0.22), PALETTE.moteCore, 0.98);
+          this.drawMesh(this.meshes.cube, sm.setTRS(gx, gy + 0.08, gz, 0.48, 0.06, 0.12, timeSec * 6.0), PALETTE.lanternCore, 0.85);
         }
-        const gx = px + Math.cos(guideAngle) * 1.15;
-        const gz = pz + Math.sin(guideAngle) * 1.15;
-        const gy = py + 1.65 + Math.sin(timeSec * 4.5) * 0.18;
-        this.drawMesh(this.meshes.sphere, new Mat4().translate(gx, gy, gz).scale(0.22, 0.22, 0.22), PALETTE.moteCore, 0.98);
-        this.drawMesh(this.meshes.cube, new Mat4().translate(gx, gy + 0.08, gz).rotateY(timeSec * 6.0).scale(0.48, 0.06, 0.12), PALETTE.lanternCore, 0.85);
       }
     }
   }

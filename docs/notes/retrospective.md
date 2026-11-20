@@ -1,0 +1,22 @@
+# Retrospective — Đảo Đèn Lồng (Phases 1 → 4)
+
+## 1. Tổng quan dự án
+**Đảo Đèn Lồng** bắt đầu từ một prototype Đêm 1 đơn giản (`Contract v1.0`) và phát triển qua 4 giai đoạn thành một tựa game 3D WebGL hoàn chỉnh gồm 3 Đêm chơi, engine vật lý/logic tất định ở 60 Hz, bộ kiểm thử tự động 28 ca, benchmark FPS, soak test 10 Đêm, bảng xếp hạng cục bộ và bộ tính năng trợ năng (`Contract v1.3` / `v1.0.0`).
+
+Kiến trúc xuyên suốt bốn phase là tách biệt tuyệt đối giữa `src/core/` (thuần ES module, không phụ thuộc DOM hay `node:*`), `src/headless/` (CLI & kiểm thử) và `src/render/` (WebGL 1.0 + Web Audio API + HUD). Nhờ quyết định này, toàn bộ 28 test kịch bản và bài soak 10 Đêm chạy trực tiếp trên cùng lõi vật lý điều khiển nhân vật Mây trong trình duyệt.
+
+## 2. Những điểm làm tốt qua từng Phase
+- **Phase 1 — Nền tảng tất định & Zero-dependency**: Viết hoàn toàn bằng Vanilla ES Modules giúp cài đặt không cần toolchain biên dịch nặng (`npm install` không kéo cây phụ thuộc bên thứ ba) và khởi động server tĩnh ngay tức thì qua `node src/server.js`.
+- **Phase 2 — Chuẩn hóa số liệu & 3 Đêm chơi**: Đồng bộ toàn bộ bộ đếm cooldown/bất tử sang số nguyên tick (`60 tick = 1s`) loại bỏ sai số dấu phẩy động. Mở rộng mượt mà sang Đảo Cau (cầu tre, bệ phóng, Gió Lạc, Bùa Gió) và Đảo Chuông (3 tầng địa hình, dốc nghiêng, gió giật).
+- **Phase 3 — Change Request "Lanterns Run Out of Fuel"**: Do `src/core/game.js` tuân thủ đúng thứ tự 12 bước trong tick, việc bổ sung suy giảm nhiên liệu (`1.0/s`), ngưỡng mất vùng an toàn (`fuel < 30`), trạng thái `drain` của Bóng Mực và luật thắng lúc bình minh (`dawn_survived`) được tích hợp gọn mà chỉ cần cập nhật có kiểm soát 2 test cũ (`REQ-04`, `REQ-08`) sang quy tắc mới và bổ sung các test Phase 3 (`P3-FUEL`, `P3-REFUEL`, `P3-DRAIN`, `P3-WIN`, `P3-CAP`).
+- **Phase 4 — Tối ưu hiệu năng & Trợ năng**: Đưa bộ nhân ma trận không cấp phát bộ nhớ (`setTRS`), bộ nhớ đệm bind VBO (`lastBoundMesh`) và lưới cầu ít đa giác (`sphereLow`) vào renderer giúp giảm đáng kể chi phí vẽ 200 Bóng Mực và 100 Đom đóm trong Benchmark Mode; đồng thời bổ sung đổi phím kèm cảnh báo trùng phím, phụ đề trực quan + mũi tên chỉ hướng Bóng Mực ngoài màn hình, Reduced Motion và chữ lớn (`>= 18px`, `×1.25`).
+
+## 3. Các sự cố thực tế & Bài học rút ra
+1. **Rò rỉ `node:fs` vào `src/core/` (Phase 2)**: Ban đầu `src/core/constants.js` đọc `game.contract.json` bằng `node:fs`. Trên Node CLI mọi thứ đều xanh, nhưng trình duyệt báo lỗi ngay khi import ES Module. *Khắc phục*: Loại bỏ `node:*` khỏi `src/core/`, viết `constants.js` thuần JS và thêm test tự động `Browser Safety` trong `tests/runner.js` để chặn tái phạm.
+2. **Lỗi tọa độ xuất phát & sàn Đêm 3 (Phase 2)**: Không có scenario tùy chỉnh, Mây xuất phát ở `(0, 0, 0)` lại nằm ngay dưới lõi Tháp Chuông tầng 2 (`Y = 6`) khiến nhân vật bị đẩy ra ngoài và xuyên sàn. *Khắc phục*: Di dời điểm xuất phát Đêm 3 về `[0, 0, -12]`, tách riêng kiểm tra va chạm Tháp Chuông theo cao độ `Y >= 5.5` và chuẩn hóa `getSupportingGroundHeight`.
+3. **Ngược hướng điều khiển & lệch camera/nhân vật (Phase 1–2)**: Phép biến đổi vector đầu vào theo `cam_yaw_deg` từng bị ngược trục trái/phải và một số khớp mô hình nhân vật hiển thị lệch khi xoay. *Khắc phục*: Khóa công thức quay chuẩn (`x' = x*cos(θ) + z*sin(θ)`, `z' = -x*sin(θ) + z*cos(θ)`) trong test tự động `REQ-02` và thống nhất hệ trục WebGL.
+4. **Cú pháp shell PowerShell (`&&` vs `;`) và phân quyền môi trường**: Việc ghi lại quy tắc sử dụng `;` cho Windows PowerShell và kiểm tra skill `.agents/skills/verify-phase/SKILL.md` trước khi gắn tag giúp tránh gián đoạn lặp lại ở Phase 3–4.
+5. **Thách thức công cụ phát hành cuối (Phase 4)**: Do hạn chế môi trường không cài sẵn `ffmpeg` hay `gh` CLI, việc quay dựng video `demo.mp4` (`< 5 phút`) và đính kèm file release trên giao diện GitHub cần thực hiện thủ công/bổ sung ngoài CLI; bù lại, toàn bộ gói phát hành `.zip`, thẻ git (`phase-4`, `v1.0.0`), `bench.json` và `soak.json` đều được kiểm chứng tự động đầy đủ.
+
+## 4. Tổng kết kỹ thuật & Định hướng
+Sau 4 phase, dự án chứng minh rằng cách tiếp cận **Contract-first + Headless Verification** (chốt `game.contract.json` trước khi mở rộng UI/WebGL) giữ cho tốc độ thay đổi rất cao ngay cả khi có Change Request lớn ở Phase 3 hay kiểm định phi chức năng ở Phase 4. Nếu phát triển tiếp sau `v1.0.0`, bước nâng cấp tự nhiên tiếp theo là chuyển sang Instanced Rendering (`ANGLE_instanced_arrays` / WebGL2) để mở rộng quy mô lên hàng nghìn thực thể mà vẫn duy trì khung hình cao trên GPU tích hợp.

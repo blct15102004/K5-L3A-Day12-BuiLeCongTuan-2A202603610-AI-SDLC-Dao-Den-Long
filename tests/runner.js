@@ -3,6 +3,8 @@ import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { TUNING, CONTRACT_VERSION } from '../src/core/constants.js';
+import { GameEngine } from '../src/core/game.js';
+import { validatePlayerName, addLeaderboardEntry, sortLeaderboard } from '../src/core/leaderboard.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,13 +55,16 @@ function runCli({ seed = 123, night = 1, scenario = null, inputs = null, ticks =
   return { raw, lines, outFile };
 }
 
-console.log('--- RUNNING SUITE: DAO DEN LONG PHASE 3 (CONTRACT v1.2) ---');
+console.log('--- RUNNING SUITE: DAO DEN LONG PHASE 4 (CONTRACT v1.3) ---');
 
 // 0. Static & Contract Integrity Checks
-runTest('Contract: game.contract.json v1.2 matches constants.js TUNING', () => {
+runTest('Contract: game.contract.json v1.3 matches constants.js TUNING and exposes bench/soak cmds', () => {
   const contract = JSON.parse(fs.readFileSync(path.resolve(rootDir, 'game.contract.json'), 'utf8'));
-  assert(contract.contract_version === '1.2', `Expected 1.2, got ${contract.contract_version}`);
-  assert(CONTRACT_VERSION === '1.2', `Expected constants.js 1.2, got ${CONTRACT_VERSION}`);
+  assert(contract.contract_version === '1.3', `Expected 1.3, got ${contract.contract_version}`);
+  assert(CONTRACT_VERSION === '1.3', `Expected constants.js 1.3, got ${CONTRACT_VERSION}`);
+  assert(typeof contract.run_cmd === 'string' && contract.run_cmd.length > 0, 'Missing run_cmd');
+  assert(typeof contract.bench_cmd === 'string' && contract.bench_cmd.length > 0, 'Missing bench_cmd');
+  assert(typeof contract.soak_cmd === 'string' && contract.soak_cmd.length > 0, 'Missing soak_cmd');
   assert(JSON.stringify(contract.tuning) === JSON.stringify(TUNING), 'game.contract.json tuning differs from src/core/constants.js');
 });
 
@@ -583,6 +588,92 @@ runTest('P3-WIN & P3-CAP: Dawn survival win (dawn_survived) + Progressive capaci
   });
   const lossOver = lossLines.find(l => l.type === 'event' && l.name === 'game_over');
   assert(lossOver && lossOver.data.result === 'lost' && lossOver.data.reason === 'dawn', 'Expected dawn loss when < 3/5');
+});
+
+// 4. Phase 4 Release Verification Tests (Contract v1.3)
+runTest('P4-LB-VAL: Leaderboard name validation enforces 3-12 chars & allowed characters', () => {
+  assert(validatePlayerName('Ab').valid === false, '2 chars must fail');
+  assert(validatePlayerName('Abcdefghijklm').valid === false, '13 chars must fail');
+  assert(validatePlayerName('Bad!Name').valid === false, 'Special chars must fail');
+  assert(validatePlayerName('May 1').valid === false, 'Spaces inside name must fail');
+  const okAscii = validatePlayerName('  May_01  ');
+  assert(okAscii.valid === true && okAscii.name === 'May_01', 'Trimmed ASCII+underscore name must pass');
+  const okVn = validatePlayerName('Tú_Ân9');
+  assert(okVn.valid === true && okVn.name === 'Tú_Ân9', 'Vietnamese diacritics must pass');
+});
+
+runTest('P4-LB-SORT: Leaderboard keeps Top 10, sorts score desc, tie-breaks by earlier achieved_at', () => {
+  let list = [];
+  for (let i = 1; i <= 11; i++) {
+    const res = addLeaderboardEntry(list, {
+      name: `Player_${i}`,
+      score: i * 100,
+      nights_won: i % 4,
+      achieved_at: `2026-11-20T10:00:${String(i).padStart(2, '0')}+07:00`,
+      seed: 100 + i
+    });
+    assert(res.ok, `Expected entry ${i} to succeed`);
+    list = res.entries;
+  }
+  assert(list.length === 10, `Expected max 10 entries, got ${list.length}`);
+  assert(list[0].score === 1100, `Expected highest score 1100 first, got ${list[0].score}`);
+  assert(list[9].score === 200, `Expected lowest retained score 200, got ${list[9].score}`);
+
+  // Tie-break at top score 1100: earlier timestamp must rank first
+  const earlierTie = addLeaderboardEntry(list, {
+    name: 'Early_Top',
+    score: 1100,
+    nights_won: 3,
+    achieved_at: '2026-11-20T09:00:00+07:00',
+    seed: 7
+  });
+  const sorted = sortLeaderboard(earlierTie.entries);
+  assert(sorted.length === 10, 'Still capped at 10');
+  assert(sorted[0].name === 'Early_Top' && sorted[1].name === 'Player_11', 'Earlier achieved_at must win tie-break');
+  assert('name' in sorted[0] && 'score' in sorted[0] && 'nights_won' in sorted[0] && 'achieved_at' in sorted[0] && 'seed' in sorted[0], 'Missing schema fields');
+});
+
+runTest('P4-LB-EXPORT: Server --export-leaderboard writes {"entries": [...]} JSON and exits 0', () => {
+  const outPath = path.resolve(tempDir, 'exported_lb.json');
+  const serverPath = path.resolve(rootDir, 'src/server.js');
+  execSync(`node "${serverPath}" --export-leaderboard "${outPath}"`, { stdio: 'pipe' });
+  const data = JSON.parse(fs.readFileSync(outPath, 'utf8'));
+  assert(Array.isArray(data.entries), 'Exported JSON must have an entries array');
+});
+
+runTest('P4-BENCH-SCENE: Benchmark scene spawns 200 wander Shades, 100 motes, L1-L3 fuel=100, freezes rules', () => {
+  const engine = new GameEngine({ seed: 42, night: 1, benchmark: true });
+  assert(engine.shades.length === 200, `Expected 200 shades, got ${engine.shades.length}`);
+  assert(engine.shades.every(s => s.state === 'wander'), 'All benchmark shades must be in wander state');
+  assert(engine.motes.length === 100, `Expected 100 motes, got ${engine.motes.length}`);
+  const litIds = engine.lanterns.filter(l => l.lit).map(l => l.id).join(',');
+  assert(litIds === 'L1,L2,L3', `Expected L1,L2,L3 lit, got ${litIds}`);
+  const snap0 = engine.getSnapshot();
+  assert(snap0.lanterns.slice(0, 3).every(l => l.fuel === 100), 'L1-L3 fuel must start at 100');
+
+  const shade0Start = [...engine.shades[0].pos];
+  for (let i = 0; i < 600; i++) {
+    engine.step({ move: [1, 0], jump: true, interact: true, pulse: true });
+  }
+  const snapEnd = engine.getSnapshot();
+  assert(engine.player.pos[0] === 0 && engine.player.pos[1] === 0 && engine.player.pos[2] === 0, 'May must remain stationary at (0,0,0) in benchmark mode');
+  assert(snapEnd.lanterns[0].fuel === 100, `Fuel decay must be disabled, got ${snapEnd.lanterns[0].fuel}`);
+  assert(engine.shades.length === 200, 'Shade spawning must be disabled in benchmark mode');
+  assert(engine.motes.length === 100, 'Mote collection/spawning must be disabled in benchmark mode');
+  assert(engine.shades[0].pos[0] !== shade0Start[0] || engine.shades[0].pos[2] !== shade0Start[2], 'Benchmark Shades must keep wandering');
+  assert(engine.state === 'playing' && engine.gameOverReason === null, 'Night end conditions must be disabled in benchmark mode');
+});
+
+runTest('P4-SOAK-SMOKE: Soak runner executes 3 consecutive Nights without crash and outputs valid JSON', () => {
+  const soakOut = path.resolve(tempDir, 'soak_smoke.json');
+  const soakPath = path.resolve(rootDir, 'src/headless/soak.js');
+  execSync(`node "${soakPath}" --seed 7 --nights 3 --out "${soakOut}"`, { stdio: 'pipe' });
+  const data = JSON.parse(fs.readFileSync(soakOut, 'utf8'));
+  assert(data.nights === 3, `Expected nights === 3, got ${data.nights}`);
+  assert(data.crashes === 0, `Expected 0 crashes, got ${data.crashes}`);
+  assert(Array.isArray(data.results) && data.results.length === 3, 'Expected 3 night results');
+  assert(data.mem_start_mb > 0 && data.mem_end_mb > 0, 'Expected positive RSS measurements');
+  assert(data.duration_s >= 0, 'Expected non-negative duration_s');
 });
 
 console.log(`\nTest results: ${passed}/${total} passed.`);

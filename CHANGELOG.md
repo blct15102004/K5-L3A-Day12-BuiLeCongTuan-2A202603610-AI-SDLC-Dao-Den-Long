@@ -1,5 +1,19 @@
 # Changelog — Đảo Đèn Lồng
 
+## [v1.0.0 / Phase 4 / Contract v1.3] — TICKET-04: "Dawn: v1.0.0 Release"
+
+### Added
+- **Benchmark Mode (`src/headless/bench.js`)**: Automated `1280×720` windowed WebGL benchmark launching Chrome/Edge with `--disable-gpu-vsync`, rendering Night 1 (L1–L3 lit `fuel: 100`, 200 `wander` Ink Shades, 100 fireflies, 3s warmup + `--duration` measurement) and outputting `bench.json` with `avg_fps`, `p1_low_fps`, `frame_ms_p95`, `frames`, `load_ms`, `peak_mem_mb`, `vsync_off`, `renderer`, and `os`.
+- **Soak Test (`src/headless/soak.js`)**: Single-process headless runner executing 10 consecutive Nights cycling 1→2→3 (`seed + i`) with seeded random movement/actions, tracking RSS memory growth (`mem_start_mb` -> `mem_end_mb`) and outputting `soak.json`.
+- **Local Leaderboard (`src/core/leaderboard.js`, `src/server.js`, UI)**: Persistent Top 10 high-score board (sorted descending by `score`, tie-breaking by earlier `achieved_at`), `3–12` character player name prompt on Victory or Defeat, Main Menu viewer modal, and `node src/server.js --export-leaderboard <out.json>` CLI export (`{"entries": [...]}`).
+- **Accessibility Suite (`index.html`, `src/render/main.js`)**:
+  - Full control rebinding (4 moves, jump, dash, interact, pulse, pause) with duplicate-key conflict alerts and Reset to Defaults.
+  - Real-time subtitle announcements (Shade spawn, wind gusts, final 10s, low-fuel `< 30`) and 4s directional off-screen Shade edge indicators.
+  - **Reduced Motion** toggle disabling camera shake, flash overlays, and rapid blinking.
+  - **Large Text (`×1.25`)** toggle scaling UI typography cleanly from `>= 18 px` base HUD size at `1280×720`.
+- **WebGL Batching & Performance (`src/render/webgl-renderer.js`, `src/render/matrix4.js`)**: Zero-allocation `setTRS` matrix updates, VBO/attribute bind caching, and low-poly sphere batching for motes and Ink Shades, with creative entities/extra VFX disabled during benchmark/soak scenes.
+- **Release & Documentation**: Added `LICENSE` (MIT), updated `CREDITS.md`, `README.md`, `AGENTS.md`, `docs/notes/retrospective.md`, `docs/proof/phase-4-proof.md`, and distributable ZIP package (`dist/dao-den-long-v1.0.0.zip`).
+
 ## [Phase 3 / Contract v1.2] — TICKET-03: "Lanterns Run Out of Fuel"
 
 ### Breaking Changes (`[REPLACED]` from Contract v1.0 / v1.1)

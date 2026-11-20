@@ -5,7 +5,9 @@
   "description": "Day 12 - AI SDLC - Đảo Đèn Lồng",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node tests/runner.js"
+    "test": "node tests/runner.js",
+    "bench": "node src/headless/bench.js",
+    "soak": "node src/headless/soak.js"
   },
   "license": "MIT"
 }
