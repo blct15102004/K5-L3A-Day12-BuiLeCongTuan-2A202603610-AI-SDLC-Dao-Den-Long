@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { TUNING, CONTRACT_VERSION } from '../src/core/constants.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +17,10 @@ if (!fs.existsSync(tempDir)) {
 let passed = 0;
 let total = 0;
 
+function assert(cond, msg) {
+  if (!cond) throw new Error(msg);
+}
+
 function runTest(name, fn) {
   total++;
   try {
@@ -28,147 +33,419 @@ function runTest(name, fn) {
   }
 }
 
-console.log('--- RUNNING SUITE: DAO DEN LONG TEST SUITE ---');
-
-// Test 1: Movement and Camera Yaw
-runTest('REQ-02: Player movement and camera yaw transformation', () => {
-  const inputsFile = path.resolve(tempDir, 'in_move.json');
-  fs.writeFileSync(inputsFile, JSON.stringify({
-    frames: [
-      { tick: 0, move: [0, 1], cam_yaw_deg: 90 }, // +Z facing 90 deg -> moves in +X
-      { tick: 60, move: [0, 0] }
-    ]
-  }));
-  const outFile = path.resolve(tempDir, 'out_move.jsonl');
-  execSync(`node "${cliPath}" --seed 123 --night 1 --inputs "${inputsFile}" --ticks 60 --out "${outFile}"`);
-
-  const lines = fs.readFileSync(outFile, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  const finalSnap = lines.filter(l => l.type === 'snapshot').pop();
-  
-  // At yaw 90 deg, move [0, 1] gives x' = 0*cos(90) + 1*sin(90) = 1, z' = 0
-  // Speed is 6.0 m/s for 1 sec (60 ticks) -> pos.x should be approx 6.0
-  if (finalSnap.player.pos[0] < 5.8 || finalSnap.player.pos[0] > 6.2) {
-    throw new Error(`Expected player.pos[0] around 6.0, got ${finalSnap.player.pos[0]}`);
+function runCli({ seed = 123, night = 1, scenario = null, inputs = null, ticks = 60, snapshotEvery = 10, tag = 'test' }) {
+  let scenArg = '';
+  if (scenario) {
+    const sf = typeof scenario === 'string' ? scenario : path.resolve(tempDir, `scen_${tag}.json`);
+    if (typeof scenario !== 'string') fs.writeFileSync(sf, JSON.stringify(scenario));
+    scenArg = `--scenario "${sf}"`;
   }
-});
-
-// Test 2: Mote pickup
-runTest('REQ-03: Mote pickup within pickup_radius and score update', () => {
-  const scenarioFile = path.resolve(__dirname, 'scenarios/scenario_pickup.json');
-  const inputsFile = path.resolve(__dirname, 'scenarios/inputs_pickup.json');
-  const outFile = path.resolve(tempDir, 'out_pickup.jsonl');
-  execSync(`node "${cliPath}" --seed 123 --night 1 --scenario "${scenarioFile}" --inputs "${inputsFile}" --ticks 60 --out "${outFile}"`);
-
-  const lines = fs.readFileSync(outFile, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  const pickEvt = lines.find(l => l.type === 'event' && l.name === 'mote_picked');
-  if (!pickEvt) throw new Error('mote_picked event not found');
-  if (pickEvt.data.carried !== 1) throw new Error(`Expected carried 1, got ${pickEvt.data.carried}`);
-
-  const endLine = lines.find(l => l.type === 'end');
-  if (endLine.score < 10) throw new Error(`Expected score >= 10, got ${endLine.score}`);
-});
-
-// Test 3: Lantern deposit & lighting
-runTest('REQ-04: Lantern deposit and lantern_lit event', () => {
-  const scenarioFile = path.resolve(__dirname, 'scenarios/scenario_deposit.json');
-  const inputsFile = path.resolve(__dirname, 'scenarios/inputs_deposit.json');
-  const outFile = path.resolve(tempDir, 'out_deposit.jsonl');
-  execSync(`node "${cliPath}" --seed 123 --night 1 --scenario "${scenarioFile}" --inputs "${inputsFile}" --ticks 30 --out "${outFile}"`);
-
-  const lines = fs.readFileSync(outFile, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  const depEvt = lines.find(l => l.type === 'event' && l.name === 'deposit');
-  if (!depEvt) throw new Error('deposit event not found');
-  if (depEvt.data.amount !== 3 || depEvt.data.deposited !== 3) {
-    throw new Error(`Expected deposit amount 3, got ${depEvt.data.amount}`);
+  let inArg = '';
+  if (inputs) {
+    const inf = typeof inputs === 'string' ? inputs : path.resolve(tempDir, `in_${tag}.json`);
+    if (typeof inputs !== 'string') fs.writeFileSync(inf, JSON.stringify(inputs));
+    inArg = `--inputs "${inf}"`;
   }
+  const outFile = path.resolve(tempDir, `out_${tag}.jsonl`);
+  execSync(`node "${cliPath}" --seed ${seed} --night ${night} ${scenArg} ${inArg} --ticks ${ticks} --snapshot-every ${snapshotEvery} --out "${outFile}"`);
+  const raw = fs.readFileSync(outFile, 'utf8');
+  const lines = raw.trim().split('\n').map(l => JSON.parse(l));
+  return { raw, lines, outFile };
+}
 
-  const litEvt = lines.find(l => l.type === 'event' && l.name === 'lantern_lit');
-  if (!litEvt) throw new Error('lantern_lit event not found');
-  if (litEvt.data.lantern_id !== 'L1') throw new Error(`Expected lantern L1, got ${litEvt.data.lantern_id}`);
+console.log('--- RUNNING SUITE: DAO DEN LONG PHASE 2 (CONTRACT v1.1) ---');
+
+// 0. Static & Contract Integrity Checks
+runTest('Contract: game.contract.json v1.1 matches constants.js TUNING', () => {
+  const contract = JSON.parse(fs.readFileSync(path.resolve(rootDir, 'game.contract.json'), 'utf8'));
+  assert(contract.contract_version === '1.1', `Expected 1.1, got ${contract.contract_version}`);
+  assert(CONTRACT_VERSION === '1.1', `Expected constants.js 1.1, got ${CONTRACT_VERSION}`);
+  assert(JSON.stringify(contract.tuning) === JSON.stringify(TUNING), 'game.contract.json tuning differs from src/core/constants.js');
 });
 
-// Test 4: Pulse xua đuổi & Stun
-runTest('REQ-06: Pulse action stuns shade and pushes back', () => {
-  const scenarioFile = path.resolve(__dirname, 'scenarios/scenario_pulse.json');
-  const inputsFile = path.resolve(__dirname, 'scenarios/inputs_pulse.json');
-  const outFile = path.resolve(tempDir, 'out_pulse.jsonl');
-  execSync(`node "${cliPath}" --seed 123 --night 1 --scenario "${scenarioFile}" --inputs "${inputsFile}" --ticks 30 --out "${outFile}"`);
-
-  const lines = fs.readFileSync(outFile, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  const pulseEvt = lines.find(l => l.type === 'event' && l.name === 'pulse');
-  if (!pulseEvt) throw new Error('pulse event not found');
-  if (!pulseEvt.data.stunned_ids.includes('S1')) {
-    throw new Error('S1 should be in stunned_ids');
-  }
-
-  const snap = lines.filter(l => l.type === 'snapshot').pop();
-  const shade = snap.shades.find(s => s.id === 'S1');
-  if (shade.state !== 'stunned') {
-    throw new Error(`Expected S1 state "stunned", got ${shade.state}`);
-  }
-  // S1 was at [0, 0, 3], push distance is 4.0m -> Z should be approx 7.0
-  if (shade.pos[2] < 6.5) {
-    throw new Error(`Expected S1 pushed to z >= 6.5, got ${shade.pos[2]}`);
-  }
-});
-
-// Test 5: Shade hit player & Lose life
-runTest('REQ-05: Shade hit player reduces flame and drops motes', () => {
-  const scenarioFile = path.resolve(__dirname, 'scenarios/scenario_hit.json');
-  const outFile = path.resolve(tempDir, 'out_hit.jsonl');
-  execSync(`node "${cliPath}" --seed 123 --night 1 --scenario "${scenarioFile}" --ticks 10 --out "${outFile}"`);
-
-  const lines = fs.readFileSync(outFile, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  const hitEvt = lines.find(l => l.type === 'event' && l.name === 'player_hit');
-  if (!hitEvt) throw new Error('player_hit event not found');
-  if (hitEvt.data.by !== 'shade') throw new Error(`Expected hit by shade, got ${hitEvt.data.by}`);
-  if (hitEvt.data.flames !== 2) throw new Error(`Expected flames 2, got ${hitEvt.data.flames}`);
-  if (hitEvt.data.dropped !== 2) throw new Error(`Expected dropped 2 (50% of 4), got ${hitEvt.data.dropped}`);
-});
-
-// Test 6: Win condition on all lanterns lit
-runTest('REQ-08: Win game when all lanterns lit', () => {
-  const scenarioFile = path.resolve(__dirname, 'scenarios/scenario_win.json');
-  const inputsFile = path.resolve(__dirname, 'scenarios/inputs_deposit.json');
-  const outFile = path.resolve(tempDir, 'out_win.jsonl');
-  execSync(`node "${cliPath}" --seed 123 --night 1 --scenario "${scenarioFile}" --inputs "${inputsFile}" --ticks 30 --out "${outFile}"`);
-
-  const lines = fs.readFileSync(outFile, 'utf8').trim().split('\n').map(l => JSON.parse(l));
-  const winEvt = lines.find(l => l.type === 'event' && l.name === 'game_over' && l.data.result === 'won');
-  if (!winEvt) throw new Error('game_over won event not found');
-  if (winEvt.data.reason !== 'all_lit') throw new Error(`Expected reason all_lit, got ${winEvt.data.reason}`);
-
-  const endLine = lines.find(l => l.type === 'end');
-  if (endLine.state !== 'won') throw new Error(`Expected end state "won", got ${endLine.state}`);
-});
-
-// Test 7: Determinism check (identical output byte-for-byte)
-runTest('REQ-09: Pure determinism across repeated executions', () => {
-  const out1 = path.resolve(tempDir, 'out_det1.jsonl');
-  const out2 = path.resolve(tempDir, 'out_det2.jsonl');
-  execSync(`node "${cliPath}" --seed 999 --night 1 --ticks 200 --out "${out1}"`);
-  execSync(`node "${cliPath}" --seed 999 --night 1 --ticks 200 --out "${out2}"`);
-
-  const content1 = fs.readFileSync(out1, 'utf8');
-  const content2 = fs.readFileSync(out2, 'utf8');
-  if (content1 !== content2) {
-    throw new Error('Deterministic outputs differ between runs with identical seed!');
-  }
-});
-
-// Test 8: Exit code 2 on invalid scenario
-runTest('Contract: Exit code 2 on invalid JSON scenario', () => {
-  const badScenario = path.resolve(tempDir, 'bad_scenario.json');
-  fs.writeFileSync(badScenario, '{ this is not valid json }');
-  const outFile = path.resolve(tempDir, 'out_bad.jsonl');
-  try {
-    execSync(`node "${cliPath}" --seed 1 --night 1 --scenario "${badScenario}" --ticks 10 --out "${outFile}"`, { stdio: 'pipe' });
-    throw new Error('Expected process to fail with exit code 2, but succeeded');
-  } catch (err) {
-    if (err.status !== 2) {
-      throw new Error(`Expected exit status 2, got ${err.status}`);
+runTest('Browser Safety: Zero node:* imports in src/core/ and src/render/', () => {
+  for (const dir of ['src/core', 'src/render']) {
+    const fullDir = path.resolve(rootDir, dir);
+    for (const file of fs.readdirSync(fullDir)) {
+      if (file.endsWith('.js')) {
+        const src = fs.readFileSync(path.resolve(fullDir, file), 'utf8');
+        assert(!/from\s+['"]node:/.test(src), `${dir}/${file} must not import node:* modules`);
+      }
     }
   }
+});
+
+// 1. Phase 1 Regression Tests (updated to standardized v1.1 values)
+runTest('REQ-02 (Reg): Player movement and camera yaw transformation (6.0 m/s)', () => {
+  const { lines } = runCli({
+    tag: 'move',
+    ticks: 60,
+    inputs: { frames: [{ tick: 0, move: [0, 1], cam_yaw_deg: 90 }, { tick: 60, move: [0, 0] }] }
+  });
+  const snap = lines.filter(l => l.type === 'snapshot').pop();
+  assert(Math.abs(snap.player.pos[0] - 6.0) < 0.05, `Expected x ~ 6.0, got ${snap.player.pos[0]}`);
+});
+
+runTest('REQ-03 (Reg): Mote pickup within 1.0m, no score until deposit', () => {
+  const { lines } = runCli({
+    tag: 'pickup',
+    scenario: path.resolve(__dirname, 'scenarios/scenario_pickup.json'),
+    inputs: path.resolve(__dirname, 'scenarios/inputs_pickup.json'),
+    ticks: 60
+  });
+  const pickEvt = lines.find(l => l.type === 'event' && l.name === 'mote_picked');
+  assert(pickEvt && pickEvt.data.carried === 1, 'Expected mote_picked carried=1');
+  const endLine = lines.find(l => l.type === 'end');
+  assert(endLine.score === 0, `Expected score 0 before deposit (v1.1), got ${endLine.score}`);
+});
+
+runTest('REQ-04 (Reg): Lantern deposit (10 motes) & lantern_lit (+100 score + 10*10)', () => {
+  const { lines } = runCli({
+    tag: 'deposit',
+    scenario: path.resolve(__dirname, 'scenarios/scenario_deposit.json'),
+    inputs: path.resolve(__dirname, 'scenarios/inputs_deposit.json'),
+    ticks: 30
+  });
+  const depEvt = lines.find(l => l.type === 'event' && l.name === 'deposit');
+  const litEvt = lines.find(l => l.type === 'event' && l.name === 'lantern_lit');
+  const endLine = lines.find(l => l.type === 'end');
+  assert(depEvt && depEvt.data.amount === 10 && depEvt.data.deposited === 10, 'Expected deposit 10');
+  assert(litEvt && litEvt.data.lantern_id === 'L1', 'Expected L1 lit');
+  assert(endLine.score === 200, `Expected score 200 (10*10 + 100), got ${endLine.score}`);
+});
+
+runTest('REQ-06 (Reg): Pulse stuns 120 ticks, pushes 4m over 15 ticks, +5 score', () => {
+  const { lines } = runCli({
+    tag: 'pulse',
+    scenario: path.resolve(__dirname, 'scenarios/scenario_pulse.json'),
+    inputs: path.resolve(__dirname, 'scenarios/inputs_pulse.json'),
+    ticks: 30,
+    snapshotEvery: 15
+  });
+  const pulseEvt = lines.find(l => l.type === 'event' && l.name === 'pulse');
+  assert(pulseEvt && pulseEvt.data.stunned_ids.includes('S1'), 'S1 should be stunned');
+  const snap30 = lines.find(l => l.type === 'snapshot' && l.tick === 30);
+  const s1 = snap30.shades.find(s => s.id === 'S1');
+  assert(s1.state === 'stunned', `Expected S1 stunned, got ${s1.state}`);
+  assert(Math.abs(s1.pos[2] - 7.0) < 0.05, `Expected S1 pushed to z~7.0, got ${s1.pos[2]}`);
+  const endLine = lines.find(l => l.type === 'end');
+  assert(endLine.score === 5, `Expected score 5, got ${endLine.score}`);
+});
+
+runTest('REQ-05 (Reg): Shade hit -1 flame, drops 50% motes in 1.5-2.5m ring, recoil state, 90t invuln', () => {
+  const { lines } = runCli({
+    tag: 'hit',
+    scenario: path.resolve(__dirname, 'scenarios/scenario_hit.json'),
+    ticks: 10,
+    snapshotEvery: 5
+  });
+  const hitEvt = lines.find(l => l.type === 'event' && l.name === 'player_hit');
+  assert(hitEvt && hitEvt.data.by === 'shade' && hitEvt.data.flames === 2 && hitEvt.data.dropped === 2, 'Expected valid shade hit');
+  const snap = lines.find(l => l.type === 'snapshot' && l.tick === 5);
+  assert(snap.player.invuln === true, 'Player should be invulnerable');
+  assert(snap.shades[0].state === 'recoil', `Expected shade state recoil, got ${snap.shades[0].state}`);
+  assert(snap.motes.filter(m => m.kind === 'dropped').length === 2, 'Expected 2 dropped motes');
+});
+
+runTest('REQ-08 (Reg): Win game on all lanterns lit + bonus score', () => {
+  const { lines } = runCli({
+    tag: 'win',
+    scenario: path.resolve(__dirname, 'scenarios/scenario_win.json'),
+    inputs: path.resolve(__dirname, 'scenarios/inputs_deposit.json'),
+    ticks: 30
+  });
+  const winEvt = lines.find(l => l.type === 'event' && l.name === 'game_over' && l.data.result === 'won');
+  assert(winEvt && winEvt.data.reason === 'all_lit', 'Expected won all_lit');
+  const endLine = lines.find(l => l.type === 'end');
+  assert(endLine.state === 'won', 'Expected end state won');
+});
+
+// 2. New Phase 2 Feature Headless Scenarios
+runTest('P2-JUMP: Jump physics (v=7, g=-20), landing, no double jump', () => {
+  const { lines } = runCli({
+    tag: 'jump',
+    scenario: { player: { pos: [0, 0, 0] }, random_motes: false, random_shades: false },
+    inputs: {
+      frames: [
+        { tick: 0, jump: true },
+        { tick: 10, jump: false },
+        { tick: 15, jump: true } // should be ignored while airborne
+      ]
+    },
+    ticks: 50,
+    snapshotEvery: 5
+  });
+  const snap10 = lines.find(l => l.type === 'snapshot' && l.tick === 10);
+  const snap50 = lines.find(l => l.type === 'snapshot' && l.tick === 50);
+  assert(snap10.player.pos[1] > 0.5 && snap10.player.grounded === false, 'Player should be airborne at tick 10');
+  assert(snap50.player.pos[1] === 0 && snap50.player.grounded === true, 'Player should land back at Y=0 by tick 50');
+});
+
+runTest('P2-DASH: Dash 14 m/s for 12 ticks (2.8m), cooldown 90 ticks, air dash keeps Y', () => {
+  const { lines } = runCli({
+    tag: 'dash',
+    scenario: { player: { pos: [0, 0, 0] }, random_motes: false, random_shades: false },
+    inputs: {
+      frames: [
+        { tick: 0, move: [0, 1], dash: true },
+        { tick: 5, move: [0, 0], dash: false }
+      ]
+    },
+    ticks: 20,
+    snapshotEvery: 1
+  });
+  const dashEvt = lines.find(l => l.type === 'event' && l.name === 'dash');
+  assert(dashEvt, 'Expected dash event');
+  const snap12 = lines.find(l => l.type === 'snapshot' && l.tick === 12);
+  assert(Math.abs(snap12.player.pos[2] - 2.8) < 0.05, `Expected z ~ 2.8 after 12-tick dash, got ${snap12.player.pos[2]}`);
+  assert(snap12.player.dash_cd_s > 1.2, `Expected dash_cd_s > 1.2, got ${snap12.player.dash_cd_s}`);
+
+  // Air dash keeps Y constant
+  const { lines: airLines } = runCli({
+    tag: 'airdash',
+    scenario: { player: { pos: [0, 0, 0] }, random_motes: false, random_shades: false },
+    inputs: {
+      frames: [
+        { tick: 0, jump: true },
+        { tick: 15, jump: false, dash: true }
+      ]
+    },
+    ticks: 28,
+    snapshotEvery: 1
+  });
+  const snap15 = airLines.find(l => l.type === 'snapshot' && l.tick === 15);
+  const snap25 = airLines.find(l => l.type === 'snapshot' && l.tick === 25);
+  assert(Math.abs(snap25.player.pos[1] - snap15.player.pos[1]) < 0.01, 'Air dash must preserve altitude Y');
+});
+
+runTest('P2-FALL: Fall off island (Y < -10) -1 flame, lose all motes, 60t respawn + 90t invuln; 0 flames loses', () => {
+  const { lines } = runCli({
+    tag: 'fall',
+    scenario: { player: { pos: [41, 0, 0], carried: 4, flames: 2, invuln_ticks: 90 }, random_motes: false, random_shades: false },
+    ticks: 160,
+    snapshotEvery: 10
+  });
+  const fallEvt = lines.find(l => l.type === 'event' && l.name === 'player_hit' && l.data.by === 'fall');
+  assert(fallEvt, 'Fall event must bypass invuln');
+  assert(fallEvt.data.flames === 1 && fallEvt.data.lost === 4 && fallEvt.data.dropped === 0, 'Fall event data mismatch');
+  const snapAfter = lines.find(l => l.type === 'snapshot' && l.tick === 150);
+  assert(snapAfter.player.pos[0] === 0 && snapAfter.player.pos[1] === 0, 'Player must respawn at (0,0,0) after 60 ticks');
+  assert(snapAfter.player.invuln === true, 'Player must have invuln after respawn');
+
+  // Instant loss on last flame
+  const { lines: lossLines } = runCli({
+    tag: 'fall_loss',
+    scenario: { player: { pos: [41, -9, 0], flames: 1 }, random_motes: false, random_shades: false },
+    ticks: 60
+  });
+  const over = lossLines.find(l => l.type === 'event' && l.name === 'game_over');
+  assert(over && over.data.result === 'lost' && over.data.reason === 'no_flames', 'Last flame fall must trigger immediate loss');
+});
+
+runTest('P2-SAFE: Newly lit lantern pushes shade out of 6m safe_radius within 30 ticks without hitting player', () => {
+  const { lines } = runCli({
+    tag: 'safe',
+    scenario: {
+      player: { pos: [0, 0, 23.5], carried: 10, flames: 3 },
+      shades: [{ id: 'S1', pos: [0, 0.8, 23.8], state: 'chase' }],
+      lanterns: [{ id: 'L1', pos: [0, 0, 25], deposited: 0, lit: false }],
+      random_motes: false,
+      random_shades: false
+    },
+    inputs: { frames: [{ tick: 0, interact: true }, { tick: 2, interact: false }] },
+    ticks: 35,
+    snapshotEvery: 5
+  });
+  const hitEvt = lines.find(l => l.type === 'event' && l.name === 'player_hit');
+  assert(!hitEvt, 'Shade pushed out by newly lit lantern must not damage player');
+  const snap35 = lines.find(l => l.type === 'snapshot' && l.tick === 35);
+  const s1 = snap35.shades[0];
+  const distToL1 = Math.hypot(s1.pos[0] - 0, s1.pos[2] - 25);
+  assert(distToL1 >= 5.99, `Expected shade pushed outside 6m safe_radius, got ${distToL1}`);
+});
+
+runTest('P2-MAP2: Night 2 Bridge & Launch Pad (20,0,18) launches to Island B (70,0,0)', () => {
+  const { lines } = runCli({
+    tag: 'night2_pad',
+    night: 2,
+    scenario: { player: { pos: [20, 0, 18] }, random_motes: false, random_shades: false },
+    ticks: 100,
+    snapshotEvery: 10
+  });
+  const snap100 = lines.find(l => l.type === 'snapshot' && l.tick === 100);
+  const distB = Math.hypot(snap100.player.pos[0] - 70, snap100.player.pos[2]);
+  assert(snap100.player.grounded === true && distB <= 28.0, `Expected launch pad to land on Island B (r<=28), dist=${distB}`);
+});
+
+runTest('P2-MAP3: Night 3 Cliff, Ramp 30deg, Launch Pad -> Tier 2, Bell Tower & Wind', () => {
+  // Ramp ascent along 30 deg from r=30.5 inward
+  const startX = 30.5 * Math.cos(Math.PI / 6);
+  const startZ = 30.5 * Math.sin(Math.PI / 6);
+  const { lines: rampLines } = runCli({
+    tag: 'n3_ramp',
+    night: 3,
+    scenario: { player: { pos: [startX, 0, startZ] }, random_motes: false, random_shades: false },
+    inputs: { frames: [{ tick: 0, move: [-Math.cos(Math.PI / 6), -Math.sin(Math.PI / 6)] }] },
+    ticks: 80,
+    snapshotEvery: 10
+  });
+  const snapRamp = rampLines.find(l => l.type === 'snapshot' && l.tick === 80);
+  assert(snapRamp.player.pos[1] === 3, `Expected player to climb ramp to Y=3, got Y=${snapRamp.player.pos[1]}`);
+
+  // Launch pad (0,3,13) -> Tier 2 (Y=6)
+  const { lines: padLines } = runCli({
+    tag: 'n3_pad',
+    night: 3,
+    scenario: { player: { pos: [0, 3, 13] }, random_motes: false, random_shades: false },
+    ticks: 60,
+    snapshotEvery: 10
+  });
+  const snapPad = padLines.find(l => l.type === 'snapshot' && l.tick === 60);
+  assert(snapPad.player.pos[1] === 6 && snapPad.player.grounded === true, `Expected landing on Tier 2 Y=6, got Y=${snapPad.player.pos[1]}`);
+
+  // Bell tower blocks center on Tier 2
+  const { lines: towerLines } = runCli({
+    tag: 'n3_tower',
+    night: 3,
+    scenario: { player: { pos: [0, 6, 3] }, random_motes: false, random_shades: false },
+    inputs: { frames: [{ tick: 0, move: [0, -1] }] },
+    ticks: 40,
+    snapshotEvery: 10
+  });
+  const snapTower = towerLines.find(l => l.type === 'snapshot' && l.tick === 40);
+  const rTower = Math.hypot(snapTower.player.pos[0], snapTower.player.pos[2]);
+  assert(rTower >= 2.0, `Expected Bell Tower (r=2.0) to block player, r=${rTower}`);
+
+  // Night 3 Wind active at tick 1800 pushes stationary player
+  const { lines: windLines } = runCli({
+    tag: 'n3_wind',
+    night: 3,
+    scenario: { player: { pos: [0, 0, -20] }, random_motes: false, random_shades: false, random_drifters: false },
+    ticks: 1850,
+    snapshotEvery: 50
+  });
+  const snap1850 = windLines.find(l => l.type === 'snapshot' && l.tick === 1850);
+  assert(snap1850.wind.active === true, 'Expected wind active at tick 1850');
+  assert(Math.hypot(snap1850.player.pos[0], snap1850.player.pos[2] + 20) > 1.0, 'Wind must push player');
+});
+
+runTest('P2-DRIFT: Drifter (Gió Lạc) chases when carried>=5, steals 3, Pulse causes drifter_drop', () => {
+  const { lines } = runCli({
+    tag: 'drifter',
+    night: 2,
+    scenario: {
+      player: { pos: [0, 0, 0], carried: 6, flames: 3, invuln_ticks: 90 },
+      drifters: [{ id: 'D1', pos: [0, 1.0, 2.5], state: 'idle' }],
+      random_motes: false,
+      random_shades: false,
+      random_drifters: false
+    },
+    inputs: {
+      frames: [
+        { tick: 25, pulse: true },
+        { tick: 30, pulse: false }
+      ]
+    },
+    ticks: 155,
+    snapshotEvery: 5
+  });
+  const stealEvt = lines.find(l => l.type === 'event' && l.name === 'drifter_steal');
+  assert(stealEvt && stealEvt.data.amount === 3 && stealEvt.data.carried === 3, 'Expected drifter_steal amount=3 (even when invuln)');
+  const dropEvt = lines.find(l => l.type === 'event' && l.name === 'drifter_drop');
+  assert(dropEvt && dropEvt.data.amount === 3, 'Expected pulse on fleeing drifter to trigger drifter_drop');
+  const snapEnd = lines.find(l => l.type === 'snapshot' && l.tick === 155);
+  assert(snapEnd.drifters[0].state === 'removed', `Expected drifter removed 120 ticks after drop, got ${snapEnd.drifters[0].state}`);
+});
+
+runTest('P2-CHARM: Wind Charm grants 7.2 m/s speed & 0 dash cooldown for 600 ticks', () => {
+  const { lines } = runCli({
+    tag: 'charm',
+    night: 2,
+    scenario: {
+      player: { pos: [34.5, 0, 0], carried: 0 },
+      charms: [{ id: 'C1', pos: [35, 0, 0], available: true }],
+      random_motes: false,
+      random_shades: false,
+      random_drifters: false
+    },
+    inputs: {
+      frames: [
+        { tick: 0, move: [1, 0] },
+        { tick: 15, move: [0, 0], dash: true },
+        { tick: 30, dash: false },
+        { tick: 32, dash: true } // immediate second dash with 0 cooldown!
+      ]
+    },
+    ticks: 40,
+    snapshotEvery: 5
+  });
+  const charmEvt = lines.find(l => l.type === 'event' && l.name === 'charm_picked');
+  assert(charmEvt && charmEvt.data.charm_id === 'C1' && charmEvt.data.charm_ticks === 600, 'Expected charm_picked');
+  const dashes = lines.filter(l => l.type === 'event' && l.name === 'dash');
+  assert(dashes.length === 2, `Expected 2 dashes with 0 cooldown, got ${dashes.length}`);
+  const snap40 = lines.find(l => l.type === 'snapshot' && l.tick === 40);
+  assert(snap40.charms[0].available === false && snap40.charms[0].respawn_s > 40, 'Charm should enter respawn timer');
+});
+
+runTest('P2-PAUSE: Pause increments tick while freezing sim_tick, time_left_s, and state="paused"', () => {
+  const { lines } = runCli({
+    tag: 'pause',
+    night: 1,
+    scenario: { random_motes: false, random_shades: false },
+    inputs: {
+      frames: [
+        { tick: 5, pause: true },
+        { tick: 6, pause: false },
+        { tick: 25, pause: true },
+        { tick: 26, pause: false }
+      ]
+    },
+    ticks: 40,
+    snapshotEvery: 5
+  });
+  const pausedEvt = lines.find(l => l.type === 'event' && l.name === 'paused');
+  const resumedEvt = lines.find(l => l.type === 'event' && l.name === 'resumed');
+  assert(pausedEvt && resumedEvt, 'Expected paused and resumed events');
+  const snap10 = lines.find(l => l.type === 'snapshot' && l.tick === 10);
+  const snap20 = lines.find(l => l.type === 'snapshot' && l.tick === 20);
+  assert(snap10.state === 'paused' && snap20.state === 'paused', 'Snapshots while paused must record state="paused"');
+  assert(snap10.sim_tick === snap20.sim_tick && snap10.time_left_s === snap20.time_left_s, 'sim_tick and time_left_s must freeze while paused');
+});
+
+runTest('P2-CONTRACT: Snapshot v1.1 schema + 3-Night Determinism + Invalid Night exit 2', () => {
+  for (const n of [1, 2, 3]) {
+    const r1 = runCli({ tag: `det_n${n}_a`, seed: 777, night: n, ticks: 120, snapshotEvery: 60 });
+    const r2 = runCli({ tag: `det_n${n}_b`, seed: 777, night: n, ticks: 120, snapshotEvery: 60 });
+    assert(r1.raw === r2.raw, `Determinism failed on Night ${n}`);
+    const snap = r1.lines.find(l => l.type === 'snapshot' && l.tick === 120);
+    assert(snap.night === n && snap.wind && typeof snap.wind.active === 'boolean', 'Missing v1.1 root/wind');
+    assert(Array.isArray(snap.player.vel) && typeof snap.player.grounded === 'boolean', 'Missing v1.1 player fields');
+    assert(Array.isArray(snap.motes) && Array.isArray(snap.drifters) && Array.isArray(snap.charms), 'Missing v1.1 entity arrays');
+  }
+  let exitCode = 0;
+  try {
+    execSync(`node "${cliPath}" --seed 1 --night 9 --ticks 10 --out "${path.resolve(tempDir, 'bad_night.jsonl')}"`, { stdio: 'pipe' });
+  } catch (err) {
+    exitCode = err.status;
+  }
+  assert(exitCode === 2, `Expected exit code 2 for invalid night, got ${exitCode}`);
+});
+
+runTest('P2-PERF: Full Night 3 simulation (21,600 ticks) finishes in <= 30s', () => {
+  const t0 = performance.now();
+  const { lines } = runCli({
+    tag: 'perf_n3',
+    seed: 2026,
+    night: 3,
+    scenario: { player: { pos: [0, 0, -12], flames: 999 } },
+    ticks: 21600,
+    snapshotEvery: 600
+  });
+  const elapsedMs = performance.now() - t0;
+  console.log(`         [Benchmark] Night 3 (21,600 ticks) completed in ${elapsedMs.toFixed(1)} ms`);
+  assert(elapsedMs <= 30000, `Took ${elapsedMs} ms, exceeded 30,000 ms limit`);
+  const endLine = lines.find(l => l.type === 'end');
+  assert(endLine && endLine.ticks === 21600, `Expected full 21,600 tick completion, got ${endLine?.ticks}`);
 });
 
 console.log(`\nTest results: ${passed}/${total} passed.`);
