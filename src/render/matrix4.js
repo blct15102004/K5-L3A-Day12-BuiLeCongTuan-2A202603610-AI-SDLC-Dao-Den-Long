@@ -1,4 +1,4 @@
-// Minimal 4x4 Matrix math for WebGL 3D rendering
+// Minimal 4x4 Matrix math & 3D->2D screen projection for WebGL 3D rendering
 export class Mat4 {
   constructor() {
     this.m = new Float32Array(16);
@@ -29,7 +29,7 @@ export class Mat4 {
     let z0 = eye[0] - center[0];
     let z1 = eye[1] - center[1];
     let z2 = eye[2] - center[2];
-    let len = 1 / Math.hypot(z0, z1, z2);
+    let len = 1 / (Math.hypot(z0, z1, z2) || 1);
     z0 *= len; z1 *= len; z2 *= len;
 
     let x0 = up[1] * z2 - up[2] * z1;
@@ -93,6 +93,17 @@ export class Mat4 {
     const s = new Mat4();
     s.m[0] = sx; s.m[5] = sy; s.m[10] = sz;
     return this.multiply(s);
+  }
+
+  transformVec4(v) {
+    const m = this.m;
+    const x = v[0], y = v[1], z = v[2], w = v[3] ?? 1;
+    return [
+      m[0] * x + m[4] * y + m[8] * z + m[12] * w,
+      m[1] * x + m[5] * y + m[9] * z + m[13] * w,
+      m[2] * x + m[6] * y + m[10] * z + m[14] * w,
+      m[3] * x + m[7] * y + m[11] * z + m[15] * w
+    ];
   }
 
   clone() {
