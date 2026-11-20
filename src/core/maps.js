@@ -22,8 +22,8 @@ function buildNight1() {
   return {
     night: 1,
     name: 'Đêm 1 — Đảo Bến',
-    introQuote: 'Ông Đăng: "Sương đen đã nuốt trọn ánh đèn bến cũ. Hãy gom đom đóm thắp lại cả 5 ngọn đèn trước khi đêm tàn, Mây nhé."',
-    duration: 300,
+    introQuote: 'Ông Đăng: "Sương đen đã nuốt trọn ánh đèn bến cũ. Hãy giữ ít nhất 3/5 ngọn đèn cháy sáng cho tới lúc bình minh, Mây nhé."',
+    duration: 240,
     shadeSpeed: 4.0,
     shadeIntervalTicks: 480, // 8s
     maxShades: 6,
@@ -60,8 +60,8 @@ function buildNight2() {
   return {
     night: 2,
     name: 'Đêm 2 — Đảo Cau',
-    introQuote: 'Ông Đăng: "Hai bờ Đảo Cau nối qua chiếc cầu tre chênh vênh. Coi chừng Gió Lạc rình rập cướp ánh sáng và tận dụng bục nhảy để vượt biển mây!"',
-    duration: 330,
+    introQuote: 'Ông Đăng: "Hai bờ Đảo Cau nối qua chiếc cầu tre chênh vênh. Giữ ít nhất 4/6 ngọn đèn sáng tới bình minh, coi chừng Gió Lạc và Bóng Mực hút nhiên liệu!"',
+    duration: 270,
     shadeSpeed: 4.0,
     shadeIntervalTicks: 420, // 7s
     maxShades: 8,
@@ -104,8 +104,8 @@ function buildNight3() {
   return {
     night: 3,
     name: 'Đêm 3 — Đảo Chuông',
-    introQuote: 'Ông Đăng: "Đêm cuối rồi! Ngọn Đảo Chuông cao ba tầng gió lộng. Hãy leo dốc, nương bục nhảy lên đỉnh tháp và đón ánh bình minh!"',
-    duration: 360,
+    introQuote: 'Ông Đăng: "Đêm cuối rồi! Giữ ít nhất 5/7 ngọn đèn rực sáng trên Đảo Chuông ba tầng gió lộng cho tới bình minh!"',
+    duration: 300,
     shadeSpeed: 4.5,
     shadeIntervalTicks: 360, // 6s
     maxShades: 10,
