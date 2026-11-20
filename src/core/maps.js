@@ -280,6 +280,14 @@ export function resolveEntityObstacle(night, x, z, y = 0, clampIsland = false) {
         nx = (nx / r) * 39.9;
         nz = (nz / r) * 39.9;
       }
+    } else if (night === 2) {
+      const cx = nx < 35.0 ? 0.0 : 70.0;
+      const dx = nx - cx;
+      const r = Math.hypot(dx, nz);
+      if (r > 28.0) {
+        nx = cx + (dx / r) * 27.9;
+        nz = (nz / r) * 27.9;
+      }
     } else if (night === 3) {
       const r = Math.hypot(nx, nz);
       if (r > 45.0) {

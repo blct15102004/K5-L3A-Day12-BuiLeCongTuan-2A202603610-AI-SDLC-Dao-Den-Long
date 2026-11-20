@@ -181,6 +181,9 @@ document.getElementById('btn-result-menu').addEventListener('click', () => {
 
 // Keyboard & Mouse Events
 window.addEventListener('keydown', (e) => {
+  if (uiScreen === 'playing' && ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+    e.preventDefault();
+  }
   keys[e.code] = true;
   if ((e.code === 'Escape' || e.code === 'KeyP') && !e.repeat) {
     if (uiScreen === 'playing' || uiScreen === 'paused') {
@@ -374,6 +377,7 @@ function loop(now) {
         };
 
         const wasWindWarn = engine.wind.warning;
+        const wasGrounded = engine.player.grounded;
         const events = engine.step(input);
 
         if (!wasWindWarn && engine.wind.warning) audio.playWindWarning();
@@ -397,7 +401,7 @@ function loop(now) {
           else if (evt.name === 'shade_spawned') audio.playShadeSpawn();
         }
 
-        if (engine.prevButtons.jump && !engine.player.grounded && engine.player.vel[1] > 6.5) {
+        if (wasGrounded && !engine.player.grounded && engine.player.vel[1] > 0) {
           audio.playJump();
         }
 

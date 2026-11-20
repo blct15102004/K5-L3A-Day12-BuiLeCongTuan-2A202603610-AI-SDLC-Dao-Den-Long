@@ -26,8 +26,8 @@ const server = http.createServer((req, res) => {
     reqPath = '/index.html';
   }
 
-  const filePath = path.join(rootDir, reqPath);
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+  const filePath = path.resolve(rootDir, '.' + reqPath);
+  if (!filePath.startsWith(rootDir) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('404 Not Found');
     return;
