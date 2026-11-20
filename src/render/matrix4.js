@@ -64,10 +64,10 @@ export class Mat4 {
     for (let i = 0; i < 4; i++) {
       for (let j = 0; j < 4; j++) {
         out[i * 4 + j] =
-          a[i * 4 + 0] * bm[0 * 4 + j] +
-          a[i * 4 + 1] * bm[1 * 4 + j] +
-          a[i * 4 + 2] * bm[2 * 4 + j] +
-          a[i * 4 + 3] * bm[3 * 4 + j];
+          a[0 * 4 + j] * bm[i * 4 + 0] +
+          a[1 * 4 + j] * bm[i * 4 + 1] +
+          a[2 * 4 + j] * bm[i * 4 + 2] +
+          a[3 * 4 + j] * bm[i * 4 + 3];
       }
     }
     this.m = out;
