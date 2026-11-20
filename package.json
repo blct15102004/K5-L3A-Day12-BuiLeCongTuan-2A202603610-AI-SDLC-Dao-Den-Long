@@ -1,0 +1,11 @@
+{
+  "name": "dao-den-long",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Day 12 - AI SDLC - Đảo Đèn Lồng",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node tests/runner.js"
+  },
+  "license": "MIT"
+}
