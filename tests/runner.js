@@ -53,13 +53,13 @@ function runCli({ seed = 123, night = 1, scenario = null, inputs = null, ticks =
   return { raw, lines, outFile };
 }
 
-console.log('--- RUNNING SUITE: DAO DEN LONG PHASE 2 (CONTRACT v1.1) ---');
+console.log('--- RUNNING SUITE: DAO DEN LONG PHASE 3 (CONTRACT v1.2) ---');
 
 // 0. Static & Contract Integrity Checks
-runTest('Contract: game.contract.json v1.1 matches constants.js TUNING', () => {
+runTest('Contract: game.contract.json v1.2 matches constants.js TUNING', () => {
   const contract = JSON.parse(fs.readFileSync(path.resolve(rootDir, 'game.contract.json'), 'utf8'));
-  assert(contract.contract_version === '1.1', `Expected 1.1, got ${contract.contract_version}`);
-  assert(CONTRACT_VERSION === '1.1', `Expected constants.js 1.1, got ${CONTRACT_VERSION}`);
+  assert(contract.contract_version === '1.2', `Expected 1.2, got ${contract.contract_version}`);
+  assert(CONTRACT_VERSION === '1.2', `Expected constants.js 1.2, got ${CONTRACT_VERSION}`);
   assert(JSON.stringify(contract.tuning) === JSON.stringify(TUNING), 'game.contract.json tuning differs from src/core/constants.js');
 });
 
@@ -99,7 +99,7 @@ runTest('REQ-03 (Reg): Mote pickup within 1.0m, no score until deposit', () => {
   assert(endLine.score === 0, `Expected score 0 before deposit (v1.1), got ${endLine.score}`);
 });
 
-runTest('REQ-04 (Reg): Lantern deposit (10 motes) & lantern_lit (+100 score + 10*10)', () => {
+runTest('REQ-04 (P3 Updated): Lantern deposit (10 motes) & lantern_lit relight:false (+100 + 10*5 = 150)', () => {
   const { lines } = runCli({
     tag: 'deposit',
     scenario: path.resolve(__dirname, 'scenarios/scenario_deposit.json'),
@@ -110,8 +110,8 @@ runTest('REQ-04 (Reg): Lantern deposit (10 motes) & lantern_lit (+100 score + 10
   const litEvt = lines.find(l => l.type === 'event' && l.name === 'lantern_lit');
   const endLine = lines.find(l => l.type === 'end');
   assert(depEvt && depEvt.data.amount === 10 && depEvt.data.deposited === 10, 'Expected deposit 10');
-  assert(litEvt && litEvt.data.lantern_id === 'L1', 'Expected L1 lit');
-  assert(endLine.score === 200, `Expected score 200 (10*10 + 100), got ${endLine.score}`);
+  assert(litEvt && litEvt.data.lantern_id === 'L1' && litEvt.data.relight === false, 'Expected L1 lit with relight:false');
+  assert(endLine.score === 150, `Expected score 150 (10*5 + 100), got ${endLine.score}`);
 });
 
 runTest('REQ-06 (Reg): Pulse stuns 120 ticks, pushes 4m over 15 ticks, +5 score', () => {
@@ -147,17 +147,19 @@ runTest('REQ-05 (Reg): Shade hit -1 flame, drops 50% motes in 1.5-2.5m ring, rec
   assert(snap.motes.filter(m => m.kind === 'dropped').length === 2, 'Expected 2 dropped motes');
 });
 
-runTest('REQ-08 (Reg): Win game on all lanterns lit + bonus score', () => {
+runTest('REQ-08 (P3 Updated): Lighting all lanterns no longer ends Night early', () => {
   const { lines } = runCli({
     tag: 'win',
     scenario: path.resolve(__dirname, 'scenarios/scenario_win.json'),
     inputs: path.resolve(__dirname, 'scenarios/inputs_deposit.json'),
     ticks: 30
   });
-  const winEvt = lines.find(l => l.type === 'event' && l.name === 'game_over' && l.data.result === 'won');
-  assert(winEvt && winEvt.data.reason === 'all_lit', 'Expected won all_lit');
+  const litEvt = lines.find(l => l.type === 'event' && l.name === 'lantern_lit');
+  const overEvt = lines.find(l => l.type === 'event' && l.name === 'game_over');
+  assert(litEvt && litEvt.data.lantern_id === 'L1', 'Expected L1 lit');
+  assert(!overEvt, 'Lighting all lanterns must NOT end Night early in Phase 3');
   const endLine = lines.find(l => l.type === 'end');
-  assert(endLine.state === 'won', 'Expected end state won');
+  assert(endLine.state === 'playing', `Expected end state "playing", got ${endLine.state}`);
 });
 
 // 2. New Phase 2 Feature Headless Scenarios
@@ -431,21 +433,156 @@ runTest('P2-CONTRACT: Snapshot v1.1 schema + 3-Night Determinism + Invalid Night
   assert(exitCode === 2, `Expected exit code 2 for invalid night, got ${exitCode}`);
 });
 
-runTest('P2-PERF: Full Night 3 simulation (21,600 ticks) finishes in <= 30s', () => {
+runTest('P2-PERF: Full Night 3 simulation (18,000 ticks / 300s) finishes in <= 30s', () => {
   const t0 = performance.now();
   const { lines } = runCli({
     tag: 'perf_n3',
     seed: 2026,
     night: 3,
     scenario: { player: { pos: [0, 0, -12], flames: 999 } },
-    ticks: 21600,
+    ticks: 18000,
     snapshotEvery: 600
   });
   const elapsedMs = performance.now() - t0;
-  console.log(`         [Benchmark] Night 3 (21,600 ticks) completed in ${elapsedMs.toFixed(1)} ms`);
+  console.log(`         [Benchmark] Night 3 (18,000 ticks) completed in ${elapsedMs.toFixed(1)} ms`);
   assert(elapsedMs <= 30000, `Took ${elapsedMs} ms, exceeded 30,000 ms limit`);
   const endLine = lines.find(l => l.type === 'end');
-  assert(endLine && endLine.ticks === 21600, `Expected full 21,600 tick completion, got ${endLine?.ticks}`);
+  assert(endLine && endLine.ticks === 18000, `Expected full 18,000 tick completion, got ${endLine?.ticks}`);
+});
+
+// 3. Phase 3 Feature Headless Scenarios (Contract v1.2)
+runTest('P3-FUEL: Passive fuel decay (1/s), lantern_out at 0, relight costs 5 motes (+40 score)', () => {
+  const { lines } = runCli({
+    tag: 'p3_fuel',
+    scenario: {
+      player: { pos: [0, 0, 23.5], carried: 5 },
+      lanterns: [{ id: 'L1', pos: [0, 0, 25], lit: true, fuel: 1.0, ever_lit: true }],
+      random_motes: false,
+      random_shades: false
+    },
+    inputs: {
+      frames: [
+        { tick: 65, interact: true },
+        { tick: 70, interact: false }
+      ]
+    },
+    ticks: 80,
+    snapshotEvery: 10
+  });
+  const outEvt = lines.find(l => l.type === 'event' && l.name === 'lantern_out');
+  assert(outEvt && outEvt.tick === 60 && outEvt.data.lantern_id === 'L1', 'Expected L1 lantern_out at tick 60');
+  const litEvt = lines.find(l => l.type === 'event' && l.name === 'lantern_lit');
+  assert(litEvt && litEvt.data.relight === true, 'Expected relight: true for 5-mote relight');
+  const snap80 = lines.find(l => l.type === 'snapshot' && l.tick === 80);
+  const l1 = snap80.lanterns.find(l => l.id === 'L1');
+  assert(l1.lit === true && l1.ever_lit === true && l1.relit_count === 1, 'Expected relit_count=1 and ever_lit=true');
+  const endLine = lines.find(l => l.type === 'end');
+  assert(endLine.score === 65, `Expected score 65 (5*5 + 40), got ${endLine.score}`);
+});
+
+runTest('P3-REFUEL: Refuel lit lantern (+10 fuel/mote), ignore full, knockback on crossing >= 30', () => {
+  const { lines } = runCli({
+    tag: 'p3_refuel',
+    scenario: {
+      player: { pos: [0, 0, 23.5], carried: 5 },
+      lanterns: [{ id: 'L1', pos: [0, 0, 25], lit: true, fuel: 25 }],
+      shades: [{ id: 'S1', pos: [0, 0.8, 22], state: 'chase' }],
+      random_motes: false,
+      random_shades: false
+    },
+    inputs: {
+      frames: [
+        { tick: 0, interact: true },
+        { tick: 5, interact: false }
+      ]
+    },
+    ticks: 35,
+    snapshotEvery: 5
+  });
+  const refEvt = lines.find(l => l.type === 'event' && l.name === 'refuel');
+  assert(refEvt && refEvt.data.amount === 5 && refEvt.data.fuel > 70, 'Expected refuel 5 motes to ~75 fuel');
+  const snap35 = lines.find(l => l.type === 'snapshot' && l.tick === 35);
+  const distS1 = Math.hypot(snap35.shades[0].pos[0], snap35.shades[0].pos[2] - 25);
+  assert(distS1 >= 5.99, `Expected shade pushed outside 6m safe_radius after refuel >= 30, got ${distS1}`);
+});
+
+runTest('P3-DRAIN: Low-fuel (<30) loses safe zone, Shade drains 5/s, fuel_drain every 60t, Pulse +15', () => {
+  const { lines } = runCli({
+    tag: 'p3_drain',
+    scenario: {
+      player: { pos: [0, 0, 0], carried: 3 },
+      lanterns: [{ id: 'L1', pos: [0, 0, 25], lit: true, fuel: 25 }],
+      shades: [{ id: 'S1', pos: [0, 0.8, 26], state: 'wander' }],
+      random_motes: false,
+      random_shades: false
+    },
+    ticks: 70,
+    snapshotEvery: 10
+  });
+  const drainEvt = lines.find(l => l.type === 'event' && l.name === 'fuel_drain');
+  assert(drainEvt && drainEvt.data.lantern_id === 'L1' && drainEvt.data.shade_id === 'S1', 'Expected fuel_drain event at 60 ticks');
+  const snap70 = lines.find(l => l.type === 'snapshot' && l.tick === 70);
+  assert(snap70.shades[0].state === 'drain', `Expected S1 state drain, got ${snap70.shades[0].state}`);
+  assert(snap70.lanterns[0].fuel < 20, `Expected fuel drained below 20, got ${snap70.lanterns[0].fuel}`);
+
+  // Pulse hitting draining shade awards +15
+  const { lines: pulseDrain } = runCli({
+    tag: 'p3_pulse_drain',
+    scenario: {
+      player: { pos: [0, 0, 23], carried: 3 },
+      lanterns: [{ id: 'L1', pos: [0, 0, 25], lit: true, fuel: 25 }],
+      shades: [{ id: 'S1', pos: [0, 0.8, 25.5], state: 'drain', target_lantern_id: 'L1' }],
+      random_motes: false,
+      random_shades: false
+    },
+    inputs: { frames: [{ tick: 0, pulse: true }, { tick: 2, pulse: false }] },
+    ticks: 10
+  });
+  const endLine = pulseDrain.find(l => l.type === 'end');
+  assert(endLine.score === 15, `Expected +15 score for pulsing draining shade, got ${endLine.score}`);
+});
+
+runTest('P3-WIN & P3-CAP: Dawn survival win (dawn_survived) + Progressive capacity 10..20', () => {
+  const { lines: winLines } = runCli({
+    tag: 'p3_dawn_win',
+    night: 1,
+    scenario: {
+      player: { pos: [0, 0, 0], flames: 2, successful_lights: 3 },
+      lanterns: [
+        { id: 'L1', lit: true, fuel: 50 },
+        { id: 'L2', lit: true, fuel: 50 },
+        { id: 'L3', lit: true, fuel: 50 }
+      ],
+      random_motes: false,
+      random_shades: false,
+      time_left_s: 1.0
+    },
+    ticks: 60,
+    snapshotEvery: 60
+  });
+  const snap0 = winLines.find(l => l.type === 'snapshot' && l.tick === 0);
+  assert(snap0.player.capacity === 16, `Expected capacity 10 + 2*3 = 16, got ${snap0.player.capacity}`);
+  const over = winLines.find(l => l.type === 'event' && l.name === 'game_over');
+  assert(over && over.data.result === 'won' && over.data.reason === 'dawn_survived', 'Expected dawn_survived');
+  const endLine = winLines.find(l => l.type === 'end');
+  // 3 lit lanterns * (50 + floor(49)) = 297 + 2 flames * 50 = 397
+  assert(endLine.score === 397, `Expected dawn bonus score 397, got ${endLine.score}`);
+
+  // Insufficient lit lanterns -> dawn loss
+  const { lines: lossLines } = runCli({
+    tag: 'p3_dawn_loss',
+    night: 1,
+    scenario: {
+      player: { pos: [0, 0, 0], flames: 3 },
+      lanterns: [{ id: 'L1', lit: true, fuel: 50 }, { id: 'L2', lit: true, fuel: 50 }],
+      random_motes: false,
+      random_shades: false,
+      time_left_s: 1.0
+    },
+    ticks: 60
+  });
+  const lossOver = lossLines.find(l => l.type === 'event' && l.name === 'game_over');
+  assert(lossOver && lossOver.data.result === 'lost' && lossOver.data.reason === 'dawn', 'Expected dawn loss when < 3/5');
 });
 
 console.log(`\nTest results: ${passed}/${total} passed.`);

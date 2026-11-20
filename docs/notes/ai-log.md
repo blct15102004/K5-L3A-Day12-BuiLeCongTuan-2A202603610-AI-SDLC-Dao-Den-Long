@@ -13,6 +13,7 @@
 |---|---|---:|---:|---:|
 | **Phase 1** | Khởi tạo & Engine Core + Test Contract + 3D UI | ~45,000 | ~12,000 | ~$0.04 |
 | **Phase 2** | Chuẩn hóa Contract v1.1, 3 Đêm, Gió Lạc, Bùa Gió, UI/HUD đầy đủ | ~52,000 | ~18,000 | ~$0.06 |
+| **Phase 3** | Change Request Contract v1.2: Nhiên liệu đèn, Bóng hút `drain`, Thắng bình minh, Colorblind | ~38,000 | ~14,000 | ~$0.04 |
 
 ### 3. Phân tích lỗi & Điều chỉnh Harness (AI Error Log & Fixes)
 - **Phase 1 — Lỗi shell PowerShell**: Dùng `&&` gây lỗi cú pháp trên Windows PowerShell. Đã sửa sang `;` và ghi vào `AGENTS.md`.

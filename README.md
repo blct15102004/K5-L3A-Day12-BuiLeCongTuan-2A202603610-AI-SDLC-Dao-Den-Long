@@ -16,11 +16,13 @@ npm start
 ```
 After starting the server, open `http://127.0.0.1:3000` (or `http://localhost:3000`) in your web browser.
 
-## 2. Game Overview (Ba Hòn Đảo)
+## 2. Game Overview (Ba Hòn Đảo — Contract v1.2)
 
-- **Đêm 1 — Đảo Bến** (`300s`): Round island (`r=40m`), 5 lanterns, shades (`4.0 m/s`).
-- **Đêm 2 — Đảo Cau** (`330s`): Twin islands (`r=28m`) connected by a bamboo bridge and 2 launch pads, 6 lanterns, Wind Charm (`C1`), and Drifters (Gió Lạc).
-- **Đêm 3 — Đảo Chuông** (`360s`): 3-tier island (`r=45m`), vertical cliffs, 2 ramps (`30°`, `150°`), Tier-2 launch pad, central Bell Tower obstacle, 7 lanterns, periodic Wind gusts (`2.0 m/s`), 2 Wind Charms, Drifters, and faster shades (`4.5 m/s`).
+- **Đêm 1 — Đảo Bến** (`240s`): Round island (`r=40m`), 5 lanterns (need `>= 3/5` lit at dawn).
+- **Đêm 2 — Đảo Cau** (`270s`): Twin islands (`r=28m`) connected by a bamboo bridge and 2 launch pads, 6 lanterns (need `>= 4/6` lit at dawn), Wind Charm (`C1`), and Drifters.
+- **Đêm 3 — Đảo Chuông** (`300s`): 3-tier island (`r=45m`), vertical cliffs, 2 ramps (`30°`, `150°`), Tier-2 launch pad, central Bell Tower, 7 lanterns (need `>= 5/7` lit at dawn), Wind gusts, 2 Wind Charms, and Drifters.
+- **Fuel & Maintenance**: Lit lanterns decay at `1.0/s`; below `30` fuel they blink (`1 Hz`), lose their `6m` safe zone, and wandering Ink Shadows can drain `5/s`. Refuel lit lanterns (`+10` fuel/firefly) or relight extinguished ones (`5` fireflies). Carrying capacity grows `10 + 2 * successful_lights` (max `20`).
+- **Accessibility**: Persistent **High-Contrast / Colorblind Palette** toggle in Settings (`#00B3FF` Ink Shadows, `#FFFFFF` `⚠` alerts, compressed/torn unlit lanterns).
 
 ## 3. Controls
 
@@ -32,13 +34,12 @@ After starting the server, open `http://127.0.0.1:3000` (or `http://localhost:30
 - `Esc` or `P`: Pause / Resume game
 - Mouse click & drag: Rotate camera view
 
-## 4. Scoring System (Contract v1.1)
+## 4. Scoring System (Contract v1.2)
 
-- Deposit motes into a lantern: **+10 points per mote deposited**
-- Light a lantern: **+100 points**
-- Hit a shade with Pulse: **+5 points per hit**
-- Win bonus: **+2 points per remaining second**, **+50 points per remaining flame**
-- Campaign total: Sum of scores across won nights.
+- Deposit firefly into a lantern (initial light, relight, or refuel): **+5 points**
+- Initial lantern light: **+100 points** · Relight an extinguished lantern: **+40 points**
+- Hit an Ink Shadow with Pulse: **+5 points** (**+15 points** if it was in `drain` state)
+- Dawn win bonus (`dawn_survived`): **+50 + floor(fuel)** per lit lantern, **+50** per remaining flame
 
 ## 5. Headless Execution (Test Contract v1.1)
 
@@ -68,6 +69,8 @@ Supported flags:
 - [AGENTS.md](AGENTS.md): AI harness and architectural compliance rules.
 - [.agents/skills/verify-phase/SKILL.md](.agents/skills/verify-phase/SKILL.md): Pre-tag verification skill.
 - [docs/notes/phase-1-spec-assumptions.md](docs/notes/phase-1-spec-assumptions.md): Phase 1 specs and assumptions.
-- [docs/notes/phase-2-spec-assumptions.md](docs/notes/phase-2-spec-assumptions.md): Phase 2 acceptance criteria, breaking changes, and assumptions.
-- [docs/proof/phase-1-proof.md](docs/proof/phase-1-proof.md) & [docs/proof/phase-2-proof.md](docs/proof/phase-2-proof.md): Phase verification proofs.
+- [docs/notes/phase-2-spec-assumptions.md](docs/notes/phase-2-spec-assumptions.md) & [docs/notes/phase-3-spec-assumptions.md](docs/notes/phase-3-spec-assumptions.md): Phase 2 & 3 specs and assumptions.
+- [docs/notes/adr-001-lantern-fuel-and-dawn-win.md](docs/notes/adr-001-lantern-fuel-and-dawn-win.md): Phase 3 ADR for lantern fuel & dawn survival.
+- [CHANGELOG.md](CHANGELOG.md): Breaking changes across phases.
+- [docs/proof/phase-1-proof.md](docs/proof/phase-1-proof.md), [docs/proof/phase-2-proof.md](docs/proof/phase-2-proof.md), [docs/proof/phase-3-proof.md](docs/proof/phase-3-proof.md): Verification proofs.
 - [docs/notes/ai-log.md](docs/notes/ai-log.md): AI error analysis and token accounting.
