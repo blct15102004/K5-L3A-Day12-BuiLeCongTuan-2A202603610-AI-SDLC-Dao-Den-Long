@@ -41,9 +41,14 @@ function main() {
   const args = process.argv.slice(2);
   const options = parseArgs(args);
 
-  if (!options.outPath || isNaN(options.ticks)) {
-    console.error('Error: --ticks and --out are required arguments.');
+  if (!options.outPath || isNaN(options.ticks) || isNaN(options.seed) || isNaN(options.snapshotEvery) || options.snapshotEvery <= 0) {
+    console.error('Error: valid --ticks, --out, --seed, and --snapshot-every (> 0) are required.');
     process.exit(1);
+  }
+
+  if (![1, 2, 3].includes(options.night)) {
+    console.error(`Error: invalid --night value (${options.night}). Must be 1, 2, or 3.`);
+    process.exit(2);
   }
 
   let scenario = null;
@@ -72,7 +77,6 @@ function main() {
     }
   }
 
-  // Build input lookup map: map from tick to frame
   const framesMap = new Map();
   if (inputs && inputs.frames) {
     let lastTick = -1;
@@ -88,27 +92,33 @@ function main() {
 
   const engine = new GameEngine({
     seed: options.seed,
+    night: options.night,
     scenario
   });
 
   const outputLines = [];
 
-  // Snapshot tick 0
+  // Snapshot tick 0 (state after scenario setup, before any input)
   outputLines.push(JSON.stringify(engine.getSnapshot()));
+  outputLines.push(JSON.stringify({
+    type: 'event',
+    tick: 0,
+    name: 'night_start',
+    data: { night: options.night }
+  }));
 
-  // Track active input state (frames only update present fields)
   let currentInput = {
     move: [0, 0],
     cam_yaw_deg: 0,
     jump: false,
     interact: false,
     pulse: false,
-    dash: false
+    dash: false,
+    pause: false
   };
 
   const totalTicks = options.ticks;
   for (let k = 0; k < totalTicks; k++) {
-    // If there is an input update at tick k, apply it
     if (framesMap.has(k)) {
       const frame = framesMap.get(k);
       currentInput = {
@@ -119,23 +129,19 @@ function main() {
 
     const events = engine.step(currentInput);
 
-    // Emit events occurred in this step
     for (const evt of events) {
       outputLines.push(JSON.stringify(evt));
     }
 
-    // Emit snapshot if matches snapshot-every interval
     if (engine.tickCount % options.snapshotEvery === 0) {
       outputLines.push(JSON.stringify(engine.getSnapshot()));
     }
 
-    // If game ended, stop simulation early
-    if (engine.state !== 'playing') {
+    if (engine.state === 'won' || engine.state === 'lost') {
       break;
     }
   }
 
-  // End line (mandatory as the last line)
   const endLine = {
     type: 'end',
     ticks: engine.tickCount,
@@ -144,7 +150,6 @@ function main() {
   };
   outputLines.push(JSON.stringify(endLine));
 
-  // Write out to output file
   const outDir = path.dirname(path.resolve(options.outPath));
   if (!fs.existsSync(outDir)) {
     fs.mkdirSync(outDir, { recursive: true });
