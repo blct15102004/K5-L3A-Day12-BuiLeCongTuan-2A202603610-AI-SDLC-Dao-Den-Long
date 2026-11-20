@@ -154,4 +154,85 @@ export class Mat4 {
     c.m.set(this.m);
     return c;
   }
+
+  copy(src) {
+    this.m.set(src.m);
+    return this;
+  }
+
+  setTranslate(x, y, z) {
+    const m = this.m;
+    m.fill(0);
+    m[0] = 1; m[5] = 1; m[10] = 1; m[15] = 1;
+    m[12] = x; m[13] = y; m[14] = z;
+    return this;
+  }
+
+  mulTranslate(x, y, z) {
+    const m = this.m;
+    m[12] += m[0] * x + m[4] * y + m[8] * z;
+    m[13] += m[1] * x + m[5] * y + m[9] * z;
+    m[14] += m[2] * x + m[6] * y + m[10] * z;
+    m[15] += m[3] * x + m[7] * y + m[11] * z;
+    return this;
+  }
+
+  mulRotateX(rad) {
+    if (rad === 0) return this;
+    const m = this.m;
+    const c = Math.cos(rad);
+    const s = Math.sin(rad);
+    for (let i = 0; i < 4; i++) {
+      const a1 = m[4 + i];
+      const a2 = m[8 + i];
+      m[4 + i] = a1 * c + a2 * s;
+      m[8 + i] = a2 * c - a1 * s;
+    }
+    return this;
+  }
+
+  mulRotateY(rad) {
+    if (rad === 0) return this;
+    const m = this.m;
+    const c = Math.cos(rad);
+    const s = Math.sin(rad);
+    for (let i = 0; i < 4; i++) {
+      const a0 = m[i];
+      const a2 = m[8 + i];
+      m[i] = a0 * c - a2 * s;
+      m[8 + i] = a0 * s + a2 * c;
+    }
+    return this;
+  }
+
+  mulRotateZ(rad) {
+    if (rad === 0) return this;
+    const m = this.m;
+    const c = Math.cos(rad);
+    const s = Math.sin(rad);
+    for (let i = 0; i < 4; i++) {
+      const a0 = m[i];
+      const a1 = m[4 + i];
+      m[i] = a0 * c + a1 * s;
+      m[4 + i] = a1 * c - a0 * s;
+    }
+    return this;
+  }
+
+  mulScale(sx, sy, sz) {
+    const m = this.m;
+    for (let i = 0; i < 4; i++) {
+      m[i] *= sx;
+      m[4 + i] *= sy;
+      m[8 + i] *= sz;
+    }
+    return this;
+  }
+
+  getTranslation(out) {
+    out[0] = this.m[12];
+    out[1] = this.m[13];
+    out[2] = this.m[14];
+    return out;
+  }
 }

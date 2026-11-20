@@ -1,9 +1,10 @@
 import { GameEngine, distXZ } from '../core/game.js';
 import { PALETTE } from '../core/constants.js';
-import { getNightConfig } from '../core/maps.js';
+import { getNightConfig, getGroundHeight } from '../core/maps.js';
 import { addLeaderboardEntry, sortLeaderboard, formatIsoWithTimezone } from '../core/leaderboard.js';
 import { WebGLRenderer } from './webgl-renderer.js';
 import { SoundEffects } from './audio.js';
+import { SKILL_CATALOG, getShadeVariant, getMoteColor } from './entity-models.js';
 
 const STORAGE_KEY = 'dao_den_long_settings_v2';
 const LB_LOCAL_KEY = 'dao_den_long_leaderboard_v1';
@@ -33,6 +34,7 @@ const KEYBIND_LABELS = {
 };
 
 const defaultSettings = {
+  difficulty: 'normal',
   volume: 0.7,
   sensitivity: 0.4,
   colorblind: false,
@@ -40,6 +42,55 @@ const defaultSettings = {
   largeText: false,
   keybinds: { ...DEFAULT_KEYBINDS }
 };
+
+const DIFFICULTY_PROFILES = {
+  easy: {
+    id: 'easy',
+    label: '🌱 Dễ',
+    desc: 'Ít quái vật sinh ra nhất · tốc độ quái chậm nhất, thư thái ngắm cảnh',
+    maxShadesByNight: [3, 4, 5],
+    shadeIntervalTicks: 660,
+    shadeSpeedByNight: [2.30, 2.30, 2.55],
+    wanderScale: 0.72,
+    maxDrifters: 1
+  },
+  normal: {
+    id: 'normal',
+    label: '🌙 Trung bình',
+    desc: 'Nhiều quái hơn mức Dễ một chút · tốc độ quái chậm như ở mức Dễ',
+    maxShadesByNight: [5, 6, 7],
+    shadeIntervalTicks: 510,
+    shadeSpeedByNight: [2.30, 2.30, 2.55],
+    wanderScale: 0.72,
+    maxDrifters: 2
+  },
+  hard: {
+    id: 'hard',
+    label: '🔥 Khó',
+    desc: 'Số lượng quái như mức Trung bình · tốc độ quái tăng cao đầy thử thách',
+    maxShadesByNight: [5, 6, 7],
+    shadeIntervalTicks: 510,
+    shadeSpeedByNight: [3.45, 3.45, 3.80],
+    wanderScale: 0.95,
+    maxDrifters: 2
+  }
+};
+
+function getDifficultyProfile(diffKey) {
+  return DIFFICULTY_PROFILES[diffKey] || DIFFICULTY_PROFILES.normal;
+}
+
+function applyDifficultyToEngine(eng, diffKey) {
+  if (!eng || eng.benchmarkMode) return;
+  const prof = getDifficultyProfile(diffKey);
+  const nIdx = Math.max(0, Math.min(2, (eng.night || 1) - 1));
+  eng.map.maxShades = prof.maxShadesByNight[nIdx];
+  eng.map.shadeIntervalTicks = prof.shadeIntervalTicks;
+  eng.map.shadeSpeed = prof.shadeSpeedByNight[nIdx];
+  if (eng.map.maxDrifters > 0) {
+    eng.map.maxDrifters = prof.maxDrifters;
+  }
+}
 
 function loadSettings() {
   try {
@@ -81,12 +132,17 @@ audio.setVolume(settings.volume);
 const renderer = new WebGLRenderer(canvas);
 
 // DOM Elements
+const motionBlurOverlay = document.getElementById('motion-blur-overlay');
 const screenFlash = document.getElementById('screen-flash');
 const hudEl = document.getElementById('hud');
 const bottomHudEl = document.getElementById('bottom-hud');
 const controlsGuideEl = document.getElementById('controls-guide');
 const hudFlames = document.getElementById('hud-flames');
+const hudDifficulty = document.getElementById('hud-difficulty');
 const hudCharm = document.getElementById('hud-charm');
+const menuDiffDesc = document.getElementById('menu-diff-desc');
+const diffButtons = Array.from(document.querySelectorAll('.diff-btn'));
+const hudThreats = document.getElementById('hud-threats');
 const hudNight = document.getElementById('hud-night');
 const hudTimer = document.getElementById('hud-timer');
 const hudWind = document.getElementById('hud-wind');
@@ -99,10 +155,12 @@ const lblDashKey = document.getElementById('lbl-dash-key');
 const lblPulseKey = document.getElementById('lbl-pulse-key');
 const cdDash = document.getElementById('cd-dash');
 const cdPulse = document.getElementById('cd-pulse');
+const skillCardBox = document.getElementById('skill-card-box');
+const lblSkillCard = document.getElementById('lbl-skill-card');
+const cdSkillCard = document.getElementById('cd-skill-card');
+const monsterToastStack = document.getElementById('monster-toast-stack');
 const subtitleBanner = document.getElementById('subtitle-banner');
 const interactPrompt = document.getElementById('interact-prompt');
-const lanternArrow = document.getElementById('lantern-arrow');
-const shadeArrowsLayer = document.getElementById('shade-arrows-layer');
 
 // Overlays
 const menuOverlay = document.getElementById('menu-overlay');
@@ -139,6 +197,33 @@ for (let i = 0; i < 20; i++) {
   moteBar.appendChild(slot);
 }
 
+let lastMotionOpacity = 0;
+const hudCache = {
+  flames: null,
+  charm: null,
+  threats: null,
+  night: null,
+  timer: null,
+  timerDanger: null,
+  timerCb: null,
+  wind: null,
+  windCb: null,
+  lanterns: null,
+  score: null,
+  fps: null,
+  moteLabel: null,
+  carried: -1,
+  cap: -1,
+  dashText: null,
+  dashOnCd: null,
+  pulseText: null,
+  pulseOnCd: null,
+  skillKey: null,
+  subtitle: null,
+  subtitleCb: null,
+  interact: null
+};
+
 let listeningAction = null;
 
 function applyAccessibilityClasses() {
@@ -146,8 +231,8 @@ function applyAccessibilityClasses() {
   document.body.classList.toggle('reduced-motion', !!settings.reducedMotion);
   const kb = settings.keybinds;
   controlsGuideEl.innerHTML =
-    `<div><span class="kbd">${formatKeyCode(kb.moveUp)}${formatKeyCode(kb.moveLeft)}${formatKeyCode(kb.moveDown)}${formatKeyCode(kb.moveRight)}</span> Di chuyển · <span class="kbd">${formatKeyCode(kb.jump)}</span> Nhảy · <span class="kbd">${formatKeyCode(kb.dash)}</span> Lướt</div>` +
-    `<div><span class="kbd">${formatKeyCode(kb.interact)}</span> Nạp đèn · <span class="kbd">${formatKeyCode(kb.pulse)}</span> Tỏa Sáng · <span class="kbd">Esc/${formatKeyCode(kb.pause)}</span> Tạm dừng</div>`;
+    `<div><span class="kbd">${formatKeyCode(kb.moveUp)}${formatKeyCode(kb.moveLeft)}${formatKeyCode(kb.moveDown)}${formatKeyCode(kb.moveRight)}</span> Chạy · <span class="kbd">${formatKeyCode(kb.jump)}</span> Nhảy · <span class="kbd">${formatKeyCode(kb.dash)}</span> Lướt</div>` +
+    `<div><span class="kbd">${formatKeyCode(kb.interact)}</span> Nạp · <span class="kbd">${formatKeyCode(kb.pulse)}</span> Tỏa Sáng · <span class="kbd">Chuột Trái</span> Kỹ Năng · <span class="kbd">${formatKeyCode(kb.pause)}</span> Dừng</div>`;
   lblDashKey.innerText = `Lướt (${formatKeyCode(kb.dash)})`;
   lblPulseKey.innerText = `Tỏa Sáng (${formatKeyCode(kb.pulse)})`;
 }
@@ -173,6 +258,26 @@ function renderKeybindGrid() {
   }
 }
 
+function syncDifficultyUI() {
+  const prof = getDifficultyProfile(settings.difficulty);
+  for (const btn of diffButtons) {
+    btn.classList.toggle('active', btn.dataset.diff === prof.id);
+  }
+  if (menuDiffDesc) menuDiffDesc.innerText = prof.desc;
+  if (hudDifficulty) hudDifficulty.innerText = prof.label;
+}
+
+for (const btn of diffButtons) {
+  btn.addEventListener('click', () => {
+    const newDiff = btn.dataset.diff;
+    if (!DIFFICULTY_PROFILES[newDiff]) return;
+    settings.difficulty = newDiff;
+    saveSettings(settings);
+    syncDifficultyUI();
+    applyDifficultyToEngine(engine, settings.difficulty);
+  });
+}
+
 function syncSettingsUI() {
   volSlider.value = Math.round(settings.volume * 100);
   volValLabel.innerText = `${volSlider.value}%`;
@@ -181,6 +286,7 @@ function syncSettingsUI() {
   colorblindToggle.checked = !!settings.colorblind;
   reducedMotionToggle.checked = !!settings.reducedMotion;
   largeTextToggle.checked = !!settings.largeText;
+  syncDifficultyUI();
   applyAccessibilityClasses();
   renderKeybindGrid();
 }
@@ -217,20 +323,179 @@ let campaignSeed = 101;
 let scoreSavedThisRun = false;
 let engine = new GameEngine({ seed: campaignSeed, night: 1 });
 let camYawDeg = 0;
+let prevCamYawDeg = 0;
+let camYawVel = 0;
+let camDist = 6.2;
+let camHeight = 2.85;
+let camFocusPos = [0, 0, 0];
+let camFocusInit = false;
+let camClipFrac = 1.0;
+let dashCamOffset = 0;
+let smoothMoveX = 0;
+let smoothMoveZ = 0;
+let prevPlayerPos = [0, 0, 0];
+let renderPlayerPos = [0, 0, 0];
 let lastCountdownSec = -1;
 let cameraShakeTicks = 0;
 let subtitleState = { text: '', expiresAt: 0 };
-const recentShadeAlerts = []; // { id, expiresAt }
+const knownDrifterIds = new Set();
+
+// Live Gameplay Skill Cards & Auto-Aim Projectiles (strictly disabled in benchmarkMode)
+let groundSkillCards = [];
+let heldSkillCards = [];
+let activeProjectiles = [];
+let nextSkillSpawnTick = 180;
+let skillCardRngState = 1337;
+
+function nextSkillRand() {
+  skillCardRngState = (Math.imul(skillCardRngState, 1664525) + 1013904223) >>> 0;
+  return skillCardRngState / 4294967296;
+}
+
+function findBestAutoAimTarget() {
+  if (!engine) return null;
+  const px = engine.player.pos[0], py = engine.player.pos[1], pz = engine.player.pos[2];
+  const yawRad = (camYawDeg * Math.PI) / 180;
+  const lookX = Math.sin(yawRad), lookZ = Math.cos(yawRad);
+  let best = null;
+  let bestScore = Infinity;
+
+  const evalCandidate = (kind, obj) => {
+    const dx = obj.pos[0] - px;
+    const dy = obj.pos[1] - py;
+    const dz = obj.pos[2] - pz;
+    const d = Math.hypot(dx, dy, dz);
+    if (d > 42.0) return;
+    const xzD = Math.hypot(dx, dz) || 1;
+    const dot = (dx * lookX + dz * lookZ) / xzD;
+    const rank = d - dot * 5.0; // slight preference for monsters in front of camera
+    if (rank < bestScore) {
+      bestScore = rank;
+      best = { kind, id: obj.id, pos: obj.pos, ref: obj };
+    }
+  };
+
+  for (let i = 0; i < engine.shades.length; i++) {
+    evalCandidate('shade', engine.shades[i]);
+  }
+  for (let i = 0; i < engine.drifters.length; i++) {
+    if (engine.drifters[i].state !== 'removed') {
+      evalCandidate('drifter', engine.drifters[i]);
+    }
+  }
+  return best;
+}
+
+function spawnRandomSkillCard() {
+  if (groundSkillCards.length >= 3) return;
+  const cfg = engine.map;
+  for (let attempt = 0; attempt < 24; attempt++) {
+    let x = 0, z = 0;
+    if (engine.night === 2) {
+      const cx = nextSkillRand() < 0.5 ? 0 : 70;
+      const r = 6.0 + nextSkillRand() * 19.0;
+      const a = nextSkillRand() * Math.PI * 2;
+      x = cx + Math.cos(a) * r;
+      z = Math.sin(a) * r;
+    } else {
+      const maxR = engine.night === 1 ? 35.0 : 39.0;
+      const r = 5.0 + nextSkillRand() * (maxR - 5.0);
+      const a = nextSkillRand() * Math.PI * 2;
+      x = Math.cos(a) * r;
+      z = Math.sin(a) * r;
+    }
+    const y = getGroundHeight(engine.night, x, z);
+    if (y === null) continue;
+    if (Math.hypot(x - engine.player.pos[0], z - engine.player.pos[2]) < 5.0) continue;
+    if (cfg.lanterns.some(l => Math.hypot(x - l.pos[0], z - l.pos[2]) < 3.4)) continue;
+    if (groundSkillCards.some(c => Math.hypot(x - c.pos[0], z - c.pos[2]) < 8.0)) continue;
+    const skill = SKILL_CATALOG[Math.floor(nextSkillRand() * SKILL_CATALOG.length)];
+    groundSkillCards.push({ id: `SC_${Date.now()}_${attempt}`, pos: [x, y, z], skill });
+    renderer.spawnBurst([x, y + 0.5, z], skill.color, 10, 2.2, 2.0);
+    return;
+  }
+}
+
+function castHeldSkillCard() {
+  if (isBenchmarkMode || uiScreen !== 'playing' || engine.state !== 'playing') return;
+  if (engine.player.respawnTicks > 0 || engine.player.flames <= 0) return;
+  if (heldSkillCards.length === 0) return;
+
+  const target = findBestAutoAimTarget();
+  if (!target) {
+    showSubtitle('✨ Chưa có quái vật trong tầm ngắm!', 1400);
+    return;
+  }
+
+  const skill = heldSkillCards.shift();
+  const startPos = [
+    renderer.mayLanternPos ? renderer.mayLanternPos[0] : engine.player.pos[0],
+    renderer.mayLanternPos ? renderer.mayLanternPos[1] : engine.player.pos[1] + 1.2,
+    renderer.mayLanternPos ? renderer.mayLanternPos[2] : engine.player.pos[2]
+  ];
+  const dx = target.pos[0] - startPos[0];
+  const dy = (target.pos[1] + 0.15) - startPos[1];
+  const dz = target.pos[2] - startPos[2];
+  const d = Math.hypot(dx, dy, dz) || 1;
+  activeProjectiles.push({
+    pos: startPos,
+    dir: [dx / d, dy / d, dz / d],
+    speed: 28.0,
+    skill,
+    targetKind: target.kind,
+    targetId: target.id,
+    trail: []
+  });
+  audio.playSkillCast(skill.id);
+  const cCss = `rgba(${Math.round(skill.color[0] * 255)}, ${Math.round(skill.color[1] * 255)}, ${Math.round(skill.color[2] * 255)}, 0.35)`;
+  triggerFlash(cCss);
+  showSubtitle(`${skill.icon} ${skill.name}!`, 1300);
+}
 
 const keys = {};
 let isMouseDown = false;
 let lastMouseX = 0;
+let lastMouseY = 0;
 let pauseKeyTriggered = false;
 let lastPointerUnlockMs = 0;
 
 function showSubtitle(text, durationMs = 2500) {
   const prefix = settings.colorblind ? '⚠ ' : '';
   subtitleState = { text: prefix + text, expiresAt: performance.now() + durationMs };
+}
+
+function getRelativeDirLabel(fromPos, toPos, yawDegVal) {
+  const dx = toPos[0] - fromPos[0];
+  const dz = toPos[2] - fromPos[2];
+  const dist = Math.hypot(dx, dz);
+  const yawRad = (yawDegVal * Math.PI) / 180;
+  const fwd = dx * Math.sin(yawRad) + dz * Math.cos(yawRad);
+  const right = -dx * Math.cos(yawRad) + dz * Math.sin(yawRad);
+  let dirText = 'phía trước';
+  if (Math.abs(fwd) >= Math.abs(right)) {
+    dirText = fwd >= 0 ? 'phía trước' : 'phía sau';
+  } else {
+    dirText = right >= 0 ? 'bên phải' : 'bên trái';
+  }
+  return `${dirText}, ${Math.round(dist)}m`;
+}
+
+function pushMonsterToast(message, kind = 'shade', durationMs = 3400) {
+  const toast = document.createElement('div');
+  const cbClass = settings.colorblind ? ' cb' : '';
+  toast.className = `monster-toast ${kind}${cbClass}`;
+  toast.innerText = (settings.colorblind ? '⚠ ' : '') + message;
+  monsterToastStack.appendChild(toast);
+  while (monsterToastStack.children.length > 3) {
+    monsterToastStack.removeChild(monsterToastStack.firstChild);
+  }
+  const fadeDelay = Math.max(400, durationMs - 300);
+  setTimeout(() => {
+    toast.classList.add('fade-out');
+    setTimeout(() => {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 300);
+  }, fadeDelay);
 }
 
 function triggerFlash(rgba) {
@@ -353,14 +618,37 @@ function showScreen(screen) {
   const inGame = !isBenchmarkMode && (screen === 'playing' || screen === 'paused');
   hudEl.classList.toggle('hidden', !inGame);
   bottomHudEl.classList.toggle('hidden', !inGame);
-  controlsGuideEl.classList.toggle('hidden', !inGame);
+  monsterToastStack.classList.toggle('hidden', !inGame);
   canvas.classList.toggle('hide-cursor', !isBenchmarkMode && screen === 'playing');
-  if (screen !== 'playing') unlockPointer();
+  if (screen !== 'playing') {
+    unlockPointer();
+    audio.stopAmbientLoops();
+    if (motionBlurOverlay && lastMotionOpacity !== 0) {
+      motionBlurOverlay.style.opacity = '0';
+      lastMotionOpacity = 0;
+    }
+  }
   if (!inGame) {
     interactPrompt.classList.add('hidden');
-    lanternArrow.classList.add('hidden');
     subtitleBanner.classList.add('hidden');
-    shadeArrowsLayer.innerHTML = '';
+    monsterToastStack.innerHTML = '';
+    hudCache.flames = null;
+    hudCache.charm = null;
+    hudCache.threats = null;
+    hudCache.night = null;
+    hudCache.timer = null;
+    hudCache.wind = null;
+    hudCache.lanterns = null;
+    hudCache.score = null;
+    hudCache.fps = null;
+    hudCache.moteLabel = null;
+    hudCache.carried = -1;
+    hudCache.cap = -1;
+    hudCache.dashText = null;
+    hudCache.pulseText = null;
+    hudCache.skillKey = null;
+    hudCache.subtitle = null;
+    hudCache.interact = null;
   }
 }
 
@@ -372,20 +660,58 @@ function startNightIntro(night, resetCampaign = false) {
     campaignSeed = Date.now() & 0xfffffff;
   }
   currentNight = night;
+  if (!isBenchmarkMode && engine.night !== night) {
+    engine = new GameEngine({ seed: campaignSeed + night - 1, night });
+    applyDifficultyToEngine(engine, settings.difficulty);
+  }
+  if (!isBenchmarkMode) {
+    renderer.getNightScenery(night);
+  }
   const cfg = getNightConfig(night);
   introTitle.innerText = cfg.name;
   introQuote.innerText = cfg.introQuote;
   showScreen('intro');
 }
 
+const prevMotesPool = [];
+const remainingMoteIdSet = new Set();
+const preShadePosMap = new Map();
+const preDrifterPosMap = new Map();
+
 function beginNightPlay() {
   audio.init();
   audio.startBgm();
   engine = new GameEngine({ seed: campaignSeed + currentNight - 1, night: currentNight });
+  applyDifficultyToEngine(engine, settings.difficulty);
+  renderer.resetVisualTrails();
+  preShadePosMap.clear();
+  preDrifterPosMap.clear();
+  lowFpsStreak = 0;
   camYawDeg = 0;
+  prevCamYawDeg = 0;
+  camYawVel = 0;
+  camClipFrac = 1.0;
+  dashCamOffset = 0;
+  if (motionBlurOverlay) {
+    motionBlurOverlay.style.opacity = '0';
+    lastMotionOpacity = 0;
+  }
+  camHeight = 2.85;
+  camFocusInit = false;
+  smoothMoveX = 0;
+  smoothMoveZ = 0;
+  prevPlayerPos = [...engine.player.pos];
+  renderPlayerPos = [...engine.player.pos];
   lastCountdownSec = -1;
   cameraShakeTicks = 0;
-  recentShadeAlerts.length = 0;
+  knownDrifterIds.clear();
+  groundSkillCards.length = 0;
+  heldSkillCards.length = 0;
+  activeProjectiles.length = 0;
+  nextSkillSpawnTick = 180;
+  skillCardRngState = (campaignSeed + currentNight * 7919) >>> 0;
+  audio.stopAmbientLoops();
+  monsterToastStack.innerHTML = '';
   subtitleState = { text: '', expiresAt: 0 };
   showScreen('playing');
   lockPointer();
@@ -444,6 +770,19 @@ window.addEventListener('keydown', (e) => {
 
   if (document.activeElement === playerNameInput) return;
 
+  if (e.code === 'Escape' && !e.repeat) {
+    if (!settingsOverlay.classList.contains('hidden')) {
+      listeningAction = null;
+      settingsOverlay.classList.add('hidden');
+      showScreen(settingsReturnScreen);
+      return;
+    }
+    if (!leaderboardOverlay.classList.contains('hidden')) {
+      leaderboardOverlay.classList.add('hidden');
+      return;
+    }
+  }
+
   if (uiScreen === 'playing' && ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
     e.preventDefault();
   }
@@ -461,7 +800,11 @@ window.addEventListener('keyup', (e) => { keys[e.code] = false; });
 canvas.addEventListener('mousedown', (e) => {
   isMouseDown = true;
   lastMouseX = e.clientX;
-  if (uiScreen === 'playing' && !isBenchmarkMode) lockPointer();
+  lastMouseY = e.clientY;
+  if (uiScreen === 'playing' && !isBenchmarkMode) {
+    lockPointer();
+    if (e.button === 0) castHeldSkillCard();
+  }
 });
 
 window.addEventListener('mouseup', () => { isMouseDown = false; });
@@ -470,13 +813,23 @@ window.addEventListener('mousemove', (e) => {
   if (uiScreen === 'playing' && !isBenchmarkMode) {
     if (document.pointerLockElement === canvas) {
       camYawDeg -= e.movementX * settings.sensitivity;
+      camHeight = Math.max(1.4, Math.min(5.8, camHeight + e.movementY * settings.sensitivity * 0.035));
     } else if (isMouseDown) {
       const dx = e.clientX - lastMouseX;
+      const dy = e.clientY - lastMouseY;
       camYawDeg -= dx * settings.sensitivity;
+      camHeight = Math.max(1.4, Math.min(5.8, camHeight + dy * settings.sensitivity * 0.035));
       lastMouseX = e.clientX;
+      lastMouseY = e.clientY;
     }
   }
 });
+
+window.addEventListener('wheel', (e) => {
+  if (uiScreen === 'playing' && !isBenchmarkMode) {
+    camDist = Math.max(3.8, Math.min(10.8, camDist + Math.sign(e.deltaY) * 0.55));
+  }
+}, { passive: true });
 
 document.addEventListener('pointerlockchange', () => {
   if (!isBenchmarkMode && document.pointerLockElement !== canvas && uiScreen === 'playing' && engine.state === 'playing') {
@@ -487,9 +840,25 @@ document.addEventListener('pointerlockchange', () => {
   }
 });
 
+canvas.addEventListener('webglcontextlost', (e) => e.preventDefault());
+
+const initialRendererInfo = renderer.getRendererInfo ? renderer.getRendererInfo() : '';
+let dynScale = (!isBenchmarkMode && /Intel|SwiftShader/i.test(initialRendererInfo)) ? 0.82 : 1.0;
+
 function resize() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (isBenchmarkMode) {
+    canvas.width = w;
+    canvas.height = h;
+  } else {
+    const maxPixels = 1280 * 720;
+    const curPixels = Math.max(1, w * h);
+    const baseScale = curPixels > maxPixels ? Math.sqrt(maxPixels / curPixels) : 1.0;
+    const effScale = baseScale * dynScale;
+    canvas.width = Math.max(320, Math.round(w * effScale));
+    canvas.height = Math.max(180, Math.round(h * effScale));
+  }
 }
 window.addEventListener('resize', resize);
 resize();
@@ -497,99 +866,194 @@ resize();
 let fpsFrames = 0;
 let fpsLastTime = performance.now();
 let currentFps = 60;
+let lastAdaptTime = performance.now();
+let lowFpsStreak = 0;
 
 function updateHUD(camera) {
   const now = performance.now();
-  hudFlames.innerText = '🔥'.repeat(Math.max(0, engine.player.flames)) || '💀';
-  if (engine.player.charmTicks > 0) {
-    hudCharm.classList.remove('hidden');
-    hudCharm.innerText = `🎐 Bùa Gió ${(engine.player.charmTicks / 60).toFixed(1)}s`;
-  } else {
-    hudCharm.classList.add('hidden');
+  const flamesStr = '🔥'.repeat(Math.max(0, engine.player.flames)) || '💀';
+  if (hudCache.flames !== flamesStr) {
+    hudCache.flames = flamesStr;
+    hudFlames.innerText = flamesStr;
   }
 
-  hudNight.innerText = engine.map.name;
+  const charmStr = engine.player.charmTicks > 0 ? `🎐 Bùa Gió ${(engine.player.charmTicks / 60).toFixed(1)}s` : '';
+  if (hudCache.charm !== charmStr) {
+    hudCache.charm = charmStr;
+    if (charmStr) {
+      hudCharm.classList.remove('hidden');
+      hudCharm.innerText = charmStr;
+    } else {
+      hudCharm.classList.add('hidden');
+    }
+  }
+
+  const activeShadeCount = engine.shades.length;
+  let activeDrifterCount = 0;
+  for (let i = 0; i < engine.drifters.length; i++) {
+    if (engine.drifters[i].state !== 'removed') activeDrifterCount++;
+  }
+  const threatStr = activeShadeCount + activeDrifterCount > 0
+    ? (activeDrifterCount > 0 ? `🌑 ${activeShadeCount} · 💨 ${activeDrifterCount}` : `🌑 ${activeShadeCount}`)
+    : '';
+  if (hudCache.threats !== threatStr) {
+    hudCache.threats = threatStr;
+    if (threatStr) {
+      hudThreats.classList.remove('hidden');
+      hudThreats.innerText = threatStr;
+    } else {
+      hudThreats.classList.add('hidden');
+    }
+  }
+
+  if (hudCache.night !== engine.map.name) {
+    hudCache.night = engine.map.name;
+    hudNight.innerText = engine.map.name;
+  }
   const mins = Math.floor(engine.timeLeft / 60);
   const secs = Math.floor(engine.timeLeft % 60);
   const timerStr = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   const isDangerTime = engine.timeLeft <= 30.0;
-  hudTimer.innerText = (isDangerTime && settings.colorblind ? '⚠ ' : '') + timerStr;
-  hudTimer.classList.toggle('timer-danger', isDangerTime);
-  hudTimer.classList.toggle('colorblind-alert', isDangerTime && settings.colorblind);
-
-  if (engine.night === 3 && (engine.wind.warning || engine.wind.active)) {
-    hudWind.classList.remove('hidden');
-    const warnPrefix = settings.colorblind ? '⚠ ' : '';
-    hudWind.innerText = engine.wind.warning ? `${warnPrefix}🍃 SẮP CÓ GIÓ MẠNH!` : `${warnPrefix}💨 GIÓ THỔI (${Math.round(engine.wind.dir_deg)}°)`;
-    hudWind.classList.toggle('colorblind-alert', !!settings.colorblind);
-  } else {
-    hudWind.classList.add('hidden');
+  const fullTimerStr = (isDangerTime && settings.colorblind ? '⚠ ' : '') + timerStr;
+  if (hudCache.timer !== fullTimerStr) {
+    hudCache.timer = fullTimerStr;
+    hudTimer.innerText = fullTimerStr;
+  }
+  if (hudCache.timerDanger !== isDangerTime) {
+    hudCache.timerDanger = isDangerTime;
+    hudTimer.classList.toggle('timer-danger', isDangerTime);
+  }
+  const timerCb = isDangerTime && !!settings.colorblind;
+  if (hudCache.timerCb !== timerCb) {
+    hudCache.timerCb = timerCb;
+    hudTimer.classList.toggle('colorblind-alert', timerCb);
   }
 
-  const litCount = engine.lanterns.filter(l => l.lit).length;
+  let windStr = '';
+  if (engine.night === 3 && (engine.wind.warning || engine.wind.active)) {
+    const warnPrefix = settings.colorblind ? '⚠ ' : '';
+    windStr = engine.wind.warning ? `${warnPrefix}🍃 SẮP CÓ GIÓ MẠNH!` : `${warnPrefix}💨 GIÓ THỔI (${Math.round(engine.wind.dir_deg)}°)`;
+  }
+  if (hudCache.wind !== windStr || hudCache.windCb !== !!settings.colorblind) {
+    hudCache.wind = windStr;
+    hudCache.windCb = !!settings.colorblind;
+    if (windStr) {
+      hudWind.classList.remove('hidden');
+      hudWind.innerText = windStr;
+      hudWind.classList.toggle('colorblind-alert', !!settings.colorblind);
+    } else {
+      hudWind.classList.add('hidden');
+    }
+  }
+
+  let litCount = 0;
+  for (let i = 0; i < engine.lanterns.length; i++) {
+    if (engine.lanterns[i].lit) litCount++;
+  }
   const reqLit = Math.ceil(engine.tuning.win_ratio * engine.lanterns.length);
-  hudLanterns.innerText = `${litCount} / ${engine.lanterns.length} (cần ${reqLit})`;
-  hudScore.innerText = `${engine.score}`;
-  hudFps.innerText = `${currentFps} FPS`;
+  const lanStr = `${litCount} / ${engine.lanterns.length} (cần ${reqLit})`;
+  if (hudCache.lanterns !== lanStr) {
+    hudCache.lanterns = lanStr;
+    hudLanterns.innerText = lanStr;
+  }
+  if (hudCache.score !== engine.score) {
+    hudCache.score = engine.score;
+    hudScore.innerText = `${engine.score}`;
+  }
+  if (hudCache.fps !== currentFps) {
+    hudCache.fps = currentFps;
+    hudFps.innerText = `${currentFps} FPS`;
+  }
 
   const cap = engine.getCarryCapacity();
-  moteBarLabel.innerText = `Đom Đóm (${engine.player.carried} / ${cap})`;
-  const slots = moteBar.children;
-  for (let i = 0; i < 20; i++) {
-    slots[i].classList.toggle('hidden', i >= cap);
-    slots[i].classList.toggle('filled', i < engine.player.carried);
+  if (hudCache.carried !== engine.player.carried || hudCache.cap !== cap) {
+    hudCache.carried = engine.player.carried;
+    hudCache.cap = cap;
+    moteBarLabel.innerText = `Đom Đóm (${engine.player.carried} / ${cap})`;
+    const slots = moteBar.children;
+    for (let i = 0; i < 20; i++) {
+      slots[i].classList.toggle('hidden', i >= cap);
+      slots[i].classList.toggle('filled', i < engine.player.carried);
+    }
   }
 
   const dashSec = engine.player.dashCdTicks / 60;
-  cdDash.innerText = engine.player.charmTicks > 0 ? '∞' : (dashSec > 0 ? `${dashSec.toFixed(1)}s` : 'Sẵn');
-  cdDash.classList.toggle('on-cd', dashSec > 0 && engine.player.charmTicks === 0);
+  const dashStr = engine.player.charmTicks > 0 ? '∞' : (dashSec > 0 ? `${dashSec.toFixed(1)}s` : 'Sẵn');
+  const dashOnCd = dashSec > 0 && engine.player.charmTicks === 0;
+  if (hudCache.dashText !== dashStr) {
+    hudCache.dashText = dashStr;
+    cdDash.innerText = dashStr;
+  }
+  if (hudCache.dashOnCd !== dashOnCd) {
+    hudCache.dashOnCd = dashOnCd;
+    cdDash.classList.toggle('on-cd', dashOnCd);
+  }
 
   const pulseSec = engine.player.pulseCdTicks / 60;
   const canPulse = pulseSec === 0 && engine.player.carried >= engine.tuning.pulse_cost;
-  cdPulse.innerText = pulseSec > 0 ? `${pulseSec.toFixed(1)}s` : (canPulse ? 'Sẵn' : `${engine.player.carried}/3`);
-  cdPulse.classList.toggle('on-cd', !canPulse);
-
-  // Subtitles / Visual Cues (priority: active subtitle -> low-fuel lantern cue)
-  const lowFuelLanterns = engine.lanterns.filter(l => l.lit && l.fuelUnits < 1800);
-  if (subtitleState.text && now < subtitleState.expiresAt) {
-    subtitleBanner.innerText = subtitleState.text;
-    subtitleBanner.classList.toggle('colorblind-alert', !!settings.colorblind);
-    subtitleBanner.classList.remove('hidden');
-  } else if (lowFuelLanterns.length > 0 && uiScreen === 'playing') {
-    const ids = lowFuelLanterns.map(l => l.id).join(', ');
-    subtitleBanner.innerText = `${settings.colorblind ? '⚠ ' : ''}🏮 Đèn ${ids} sắp tắt (<30%)!`;
-    subtitleBanner.classList.toggle('colorblind-alert', !!settings.colorblind);
-    subtitleBanner.classList.remove('hidden');
-  } else {
-    subtitleBanner.classList.add('hidden');
+  const pulseStr = pulseSec > 0 ? `${pulseSec.toFixed(1)}s` : (canPulse ? 'Sẵn' : `${engine.player.carried}/3`);
+  const pulseOnCd = !canPulse;
+  if (hudCache.pulseText !== pulseStr) {
+    hudCache.pulseText = pulseStr;
+    cdPulse.innerText = pulseStr;
+  }
+  if (hudCache.pulseOnCd !== pulseOnCd) {
+    hudCache.pulseOnCd = pulseOnCd;
+    cdPulse.classList.toggle('on-cd', pulseOnCd);
   }
 
-  // Directional edge arrows for newly spawned Ink Shades
-  shadeArrowsLayer.innerHTML = '';
-  for (let i = recentShadeAlerts.length - 1; i >= 0; i--) {
-    const alert = recentShadeAlerts[i];
-    if (now > alert.expiresAt) {
-      recentShadeAlerts.splice(i, 1);
-      continue;
+  if (skillCardBox && lblSkillCard && cdSkillCard) {
+    const skillKey = heldSkillCards.length > 0 ? `${heldSkillCards[0].id}_${heldSkillCards.length}` : 'empty';
+    if (hudCache.skillKey !== skillKey) {
+      hudCache.skillKey = skillKey;
+      if (heldSkillCards.length > 0) {
+        const topSkill = heldSkillCards[0];
+        const colCss = `rgb(${Math.round(topSkill.color[0] * 255)},${Math.round(topSkill.color[1] * 255)},${Math.round(topSkill.color[2] * 255)})`;
+        skillCardBox.classList.add('ready');
+        skillCardBox.style.borderColor = colCss;
+        lblSkillCard.innerText = `${topSkill.icon} ${topSkill.name} (${heldSkillCards.length}/3)`;
+        cdSkillCard.innerText = 'Chuột Trái 🎯';
+        cdSkillCard.classList.remove('on-cd');
+        cdSkillCard.style.color = colCss;
+      } else {
+        skillCardBox.classList.remove('ready');
+        skillCardBox.style.borderColor = '';
+        lblSkillCard.innerText = 'Thẻ Kỹ Năng (0/3)';
+        cdSkillCard.innerText = 'Nhặt trên đất';
+        cdSkillCard.classList.add('on-cd');
+        cdSkillCard.style.color = '';
+      }
     }
-    const shade = engine.shades.find(s => s.id === alert.id);
-    if (!shade) continue;
-    const proj = renderer.projectToScreen(shade.pos, camera);
-    const cx = canvas.width / 2;
-    const cy = canvas.height / 2;
-    const angle = Math.atan2(proj.screenY - cy, proj.screenX - cx);
-    const rad = Math.min(cx, cy) - 55;
-    const arrow = document.createElement('div');
-    arrow.className = 'shade-arrow' + (settings.colorblind ? ' cb' : '');
-    arrow.style.left = `${cx + Math.cos(angle) * rad}px`;
-    arrow.style.top = `${cy + Math.sin(angle) * rad}px`;
-    arrow.style.transform = `translate(-50%, -50%) rotate(${angle + Math.PI / 2}rad)`;
-    shadeArrowsLayer.appendChild(arrow);
+  }
+
+  // Subtitles / Visual Cues (priority: active subtitle -> low-fuel lantern cue)
+  let subStr = '';
+  if (subtitleState.text && now < subtitleState.expiresAt) {
+    subStr = subtitleState.text;
+  } else if (uiScreen === 'playing') {
+    let lowIds = '';
+    for (let i = 0; i < engine.lanterns.length; i++) {
+      const l = engine.lanterns[i];
+      if (l.lit && l.fuelUnits < 1800) lowIds = lowIds ? `${lowIds}, ${l.id}` : l.id;
+    }
+    if (lowIds) subStr = `${settings.colorblind ? '⚠ ' : ''}🏮 Đèn ${lowIds} sắp tắt (<30%)!`;
+  }
+  if (hudCache.subtitle !== subStr || hudCache.subtitleCb !== !!settings.colorblind) {
+    hudCache.subtitle = subStr;
+    hudCache.subtitleCb = !!settings.colorblind;
+    if (subStr) {
+      subtitleBanner.innerText = subStr;
+      subtitleBanner.classList.toggle('colorblind-alert', !!settings.colorblind);
+      subtitleBanner.classList.remove('hidden');
+    } else {
+      subtitleBanner.classList.add('hidden');
+    }
   }
 
   // Interact Prompt
   let nearLantern = null;
-  for (const l of engine.lanterns) {
+  for (let i = 0; i < engine.lanterns.length; i++) {
+    const l = engine.lanterns[i];
     const isValid = !l.lit || (l.lit && l.fuelUnits < 6000);
     if (isValid && distXZ(engine.player.pos, l.pos) <= engine.tuning.interact_radius && Math.abs(engine.player.pos[1] - l.pos[1]) <= 2.5) {
       nearLantern = l;
@@ -597,40 +1061,25 @@ function updateHUD(camera) {
     }
   }
   const intKey = formatKeyCode(settings.keybinds.interact);
+  let intStr = '';
   if (nearLantern && uiScreen === 'playing') {
-    interactPrompt.classList.remove('hidden');
     if (!nearLantern.lit) {
       const cost = nearLantern.everLit ? engine.tuning.relight_cost : engine.tuning.lantern_cost;
-      interactPrompt.innerText = nearLantern.everLit
+      intStr = nearLantern.everLit
         ? `${intKey} — Thắp lại đèn (${nearLantern.deposited}/${cost})`
         : `${intKey} — Nạp ánh sáng (${nearLantern.deposited}/${cost})`;
     } else {
-      interactPrompt.innerText = `${intKey} — Tiếp nhiên liệu (${Math.round(nearLantern.fuelUnits / 60)}%)`;
+      intStr = `${intKey} — Tiếp nhiên liệu (${Math.round(nearLantern.fuelUnits / 60)}%)`;
     }
-  } else {
-    interactPrompt.classList.add('hidden');
   }
-
-  // Off-screen arrow pointing to nearest unlit or low-fuel lantern
-  const urgent = engine.lanterns.filter(l => !l.lit || l.fuelUnits < 1800);
-  if (urgent.length > 0 && uiScreen === 'playing') {
-    urgent.sort((a, b) => distXZ(engine.player.pos, a.pos) - distXZ(engine.player.pos, b.pos));
-    const nearest = urgent[0];
-    const proj = renderer.projectToScreen([nearest.pos[0], nearest.pos[1] + 2.0, nearest.pos[2]], camera);
-    if (!proj.onScreen) {
-      const cx = canvas.width / 2;
-      const cy = canvas.height / 2;
-      const angle = Math.atan2(proj.screenY - cy, proj.screenX - cx);
-      const rad = Math.min(cx, cy) - 75;
-      lanternArrow.style.left = `${cx + Math.cos(angle) * rad}px`;
-      lanternArrow.style.top = `${cy + Math.sin(angle) * rad}px`;
-      lanternArrow.style.transform = `translate(-50%, -50%) rotate(${angle + Math.PI / 2}rad)`;
-      lanternArrow.classList.remove('hidden');
+  if (hudCache.interact !== intStr) {
+    hudCache.interact = intStr;
+    if (intStr) {
+      interactPrompt.classList.remove('hidden');
+      interactPrompt.innerText = intStr;
     } else {
-      lanternArrow.classList.add('hidden');
+      interactPrompt.classList.add('hidden');
     }
-  } else {
-    lanternArrow.classList.add('hidden');
   }
 }
 
@@ -677,6 +1126,7 @@ function handleGameEnd() {
 }
 
 function runBenchmarkDriver() {
+  document.body.classList.add('benchmark-mode');
   const seed = parseInt(urlParams.get('seed') || '42', 10);
   const durationSec = parseFloat(urlParams.get('duration') || '30');
   const t0 = parseFloat(urlParams.get('t0') || String(Date.now()));
@@ -764,6 +1214,115 @@ if (isBenchmarkMode) {
   const tickInterval = 1000 / 60;
   let accumulator = 0;
 
+  function resolveSceneryCollisions() {
+    if (engine.player.respawnTicks > 0 || engine.player.flames <= 0) return;
+    const sceneryData = renderer.getNightScenery(engine.night);
+    const colliders = sceneryData ? sceneryData.colliders : [];
+    const playerR = 0.36;
+    const py = engine.player.pos[1];
+
+    const pushOut = (cx, cy, cz, r, h) => {
+      if (py >= cy + h || py + 1.45 <= cy - 0.1) return;
+      const dx = engine.player.pos[0] - cx;
+      const dz = engine.player.pos[2] - cz;
+      const d = Math.hypot(dx, dz);
+      const minD = r + playerR;
+      if (d < minD) {
+        const ux = d > 0.0001 ? dx / d : 1;
+        const uz = d > 0.0001 ? dz / d : 0;
+        const nx = cx + ux * minD;
+        const nz = cz + uz * minD;
+        const gh = getGroundHeight(engine.night, nx, nz);
+        if (gh !== null && Math.abs(gh - py) <= 1.2) {
+          engine.player.pos[0] = nx;
+          engine.player.pos[2] = nz;
+        }
+      }
+    };
+
+    const ox = 2.8, oz = engine.night === 3 ? -14.5 : -2.5;
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < colliders.length; i++) {
+        const c = colliders[i];
+        pushOut(c.x, c.y, c.z, c.r, c.h);
+      }
+      for (let i = 0; i < engine.lanterns.length; i++) {
+        const l = engine.lanterns[i];
+        pushOut(l.pos[0], l.pos[1], l.pos[2], 0.85, 4.2);
+      }
+      pushOut(ox, 0, oz, 0.52, 2.0);
+    }
+  }
+
+  function computeCameraObstructionFraction(target, desiredEye) {
+    const tx = target[0], ty = target[1], tz = target[2];
+    const dx = desiredEye[0] - tx;
+    const dy = desiredEye[1] - ty;
+    const dz = desiredEye[2] - tz;
+    const distXZVal = Math.hypot(dx, dz);
+    if (distXZVal < 0.05) return 1.0;
+
+    let minT = 1.0;
+    const camPaddingR = 0.28;
+
+    // 1. Check cylinder obstacle intersection along camera ray (trees, rocks, lanterns, pillars, sacred center tree)
+    const testCylinder = (cx, cy, cz, r, h) => {
+      const effR = r + camPaddingR;
+      const fx = tx - cx;
+      const fz = tz - cz;
+      const a = dx * dx + dz * dz;
+      const b = 2 * (fx * dx + fz * dz);
+      const c = fx * fx + fz * fz - effR * effR;
+      const disc = b * b - 4 * a * c;
+      if (disc <= 0) return;
+      const sqrtD = Math.sqrt(disc);
+      const tHit = (-b - sqrtD) / (2 * a);
+      const tExit = (-b + sqrtD) / (2 * a);
+      if (tExit <= 0.12 || tHit >= minT) return;
+      const tCheck = Math.max(0.15, tHit);
+      const hitY = ty + dy * tCheck;
+      if (hitY >= cy - 0.15 && hitY <= cy + h + 0.25) {
+        minT = Math.min(minT, Math.max(0.22, tHit - 0.04));
+      }
+    };
+
+    const sceneryData = renderer.getNightScenery(engine.night);
+    const colliders = sceneryData ? sceneryData.colliders : [];
+    for (let i = 0; i < colliders.length; i++) {
+      const col = colliders[i];
+      if (col.r >= 0.42 && col.h >= 1.4) {
+        testCylinder(col.x, col.y, col.z, col.r, col.h);
+      }
+    }
+    for (let i = 0; i < engine.lanterns.length; i++) {
+      const l = engine.lanterns[i];
+      testCylinder(l.pos[0], l.pos[1], l.pos[2], 0.78, 4.1);
+    }
+    if (engine.night === 3) {
+      testCylinder(0, 6.0, 0, 1.55, 11.5);
+    }
+
+    // 2. Check cliff walls / elevated terrain platforms along camera ray
+    const steps = 10;
+    for (let s = 2; s <= steps; s++) {
+      const t = s / steps;
+      if (t >= minT) break;
+      const sx = tx + dx * t;
+      const sy = ty + dy * t;
+      const sz = tz + dz * t;
+      const gY = getGroundHeight(engine.night, sx, sz);
+      if (gY !== null && gY > sy - 0.38) {
+        // If terrain jumps abruptly above player target (a vertical cliff wall), pull camera in front of wall
+        if (gY > ty + 0.45) {
+          minT = Math.min(minT, Math.max(0.22, (s - 1.2) / steps));
+          break;
+        }
+      }
+    }
+
+    return minT;
+  }
+
   function loop(now) {
     const delta = Math.min(100, now - lastTime);
     lastTime = now;
@@ -774,6 +1333,19 @@ if (isBenchmarkMode) {
       currentFps = Math.round((fpsFrames * 1000) / (now - fpsLastTime));
       fpsFrames = 0;
       fpsLastTime = now;
+      if (!isBenchmarkMode && uiScreen === 'playing' && now - lastAdaptTime >= 1000) {
+        lastAdaptTime = now;
+        if (currentFps < 56 && dynScale > 0.70) {
+          lowFpsStreak++;
+          if (lowFpsStreak >= 2) {
+            lowFpsStreak = 0;
+            dynScale = Math.max(0.70, Math.round((dynScale - 0.06) * 100) / 100);
+            resize();
+          }
+        } else {
+          lowFpsStreak = 0;
+        }
+      }
     }
 
     while (accumulator >= tickInterval) {
@@ -785,15 +1357,33 @@ if (isBenchmarkMode) {
           showScreen(engine.state === 'paused' ? 'paused' : 'playing');
           if (uiScreen === 'playing') lockPointer();
         } else if (uiScreen === 'playing' && engine.state === 'playing') {
+          prevPlayerPos[0] = engine.player.pos[0];
+          prevPlayerPos[1] = engine.player.pos[1];
+          prevPlayerPos[2] = engine.player.pos[2];
+
           const kb = settings.keybinds;
-          let mx = 0, mz = 0;
-          if (keys[kb.moveUp] || keys['ArrowUp']) mz += 1;
-          if (keys[kb.moveDown] || keys['ArrowDown']) mz -= 1;
-          if (keys[kb.moveRight] || keys['ArrowRight']) mx -= 1;
-          if (keys[kb.moveLeft] || keys['ArrowLeft']) mx += 1;
+          let targetMx = 0, targetMz = 0;
+          if (keys[kb.moveUp] || keys['ArrowUp']) targetMz += 1;
+          if (keys[kb.moveDown] || keys['ArrowDown']) targetMz -= 1;
+          if (keys[kb.moveRight] || keys['ArrowRight']) targetMx -= 1;
+          if (keys[kb.moveLeft] || keys['ArrowLeft']) targetMx += 1;
+          const targetMag = Math.hypot(targetMx, targetMz);
+          if (targetMag > 1.0) {
+            targetMx /= targetMag;
+            targetMz /= targetMag;
+          }
+
+          const hasMove = targetMag > 0.001;
+          const moveBlend = hasMove ? 0.28 : 0.24;
+          smoothMoveX += (targetMx - smoothMoveX) * moveBlend;
+          smoothMoveZ += (targetMz - smoothMoveZ) * moveBlend;
+          if (!hasMove && Math.hypot(smoothMoveX, smoothMoveZ) < 0.015) {
+            smoothMoveX = 0;
+            smoothMoveZ = 0;
+          }
 
           const input = {
-            move: [mx, mz],
+            move: [smoothMoveX, smoothMoveZ],
             cam_yaw_deg: camYawDeg,
             jump: !!keys[kb.jump],
             dash: !!(keys[kb.dash] || (kb.dash === 'ShiftLeft' && keys['ShiftRight'])),
@@ -801,9 +1391,184 @@ if (isBenchmarkMode) {
             pulse: !!(keys[kb.pulse] || (kb.pulse === 'KeyQ' && keys['KeyF']))
           };
 
+          const prevMoteCount = engine.motes.length;
+          for (let i = 0; i < prevMoteCount; i++) {
+            const m = engine.motes[i];
+            let rec = prevMotesPool[i];
+            if (!rec) {
+              rec = { id: '', x: 0, y: 0, z: 0 };
+              prevMotesPool.push(rec);
+            }
+            rec.id = m.id;
+            rec.x = m.pos[0];
+            rec.y = m.pos[1];
+            rec.z = m.pos[2];
+          }
+          const diffProf = getDifficultyProfile(settings.difficulty);
+          for (let i = 0; i < engine.shades.length; i++) {
+            const sh = engine.shades[i];
+            let rec = preShadePosMap.get(sh.id);
+            if (!rec) {
+              rec = { x: 0, z: 0, state: '' };
+              preShadePosMap.set(sh.id, rec);
+            }
+            rec.x = sh.pos[0];
+            rec.z = sh.pos[2];
+            rec.state = sh.state;
+          }
+          for (let i = 0; i < engine.drifters.length; i++) {
+            const dr = engine.drifters[i];
+            if (dr.state === 'removed') continue;
+            let rec = preDrifterPosMap.get(dr.id);
+            if (!rec) {
+              rec = { x: 0, z: 0 };
+              preDrifterPosMap.set(dr.id, rec);
+            }
+            rec.x = dr.pos[0];
+            rec.z = dr.pos[2];
+          }
+
           const wasWindWarn = engine.wind.warning;
           const wasGrounded = engine.player.grounded;
           const events = engine.step(input);
+
+          // Per-difficulty monster count & non-chase movement scaling (keeps src/core untouched)
+          if (diffProf.id === 'easy' && engine.simTick === 300 && engine.shades.length > 1) {
+            const removed = engine.shades.pop();
+            if (removed) {
+              for (let ei = events.length - 1; ei >= 0; ei--) {
+                if (events[ei].name === 'shade_spawned' && events[ei].data && events[ei].data.id === removed.id) {
+                  events.splice(ei, 1);
+                }
+              }
+            }
+          }
+          for (let i = 0; i < engine.shades.length; i++) {
+            const sh = engine.shades[i];
+            const prev = preShadePosMap.get(sh.id);
+            if (prev && sh.state === 'wander' && prev.state === 'wander') {
+              sh.pos[0] = prev.x + (sh.pos[0] - prev.x) * diffProf.wanderScale;
+              sh.pos[2] = prev.z + (sh.pos[2] - prev.z) * diffProf.wanderScale;
+            }
+          }
+          for (let i = 0; i < engine.drifters.length; i++) {
+            const dr = engine.drifters[i];
+            const prev = preDrifterPosMap.get(dr.id);
+            if (prev && dr.state !== 'removed') {
+              dr.pos[0] = prev.x + (dr.pos[0] - prev.x) * diffProf.wanderScale;
+              dr.pos[2] = prev.z + (dr.pos[2] - prev.z) * diffProf.wanderScale;
+            }
+          }
+
+          resolveSceneryCollisions();
+
+          // Live Gameplay Skill Card spawning, pickup & auto-aim projectile elimination
+          if (engine.simTick >= nextSkillSpawnTick) {
+            spawnRandomSkillCard();
+            nextSkillSpawnTick = engine.simTick + 900; // Every 15s
+          }
+          if (engine.player.respawnTicks === 0 && engine.player.flames > 0 && heldSkillCards.length < 3) {
+            for (let i = groundSkillCards.length - 1; i >= 0; i--) {
+              const card = groundSkillCards[i];
+              if (
+                distXZ(engine.player.pos, card.pos) <= 1.65 &&
+                Math.abs(engine.player.pos[1] - card.pos[1]) <= 1.6
+              ) {
+                groundSkillCards.splice(i, 1);
+                heldSkillCards.push(card.skill);
+                audio.playSkillCardPickup();
+                renderer.spawnBurst(card.pos, card.skill.color, 16, 3.4, 2.4);
+                showSubtitle(`${card.skill.icon} Nhặt Thẻ: ${card.skill.name} — Click Chuột Trái để dùng!`, 2800);
+                if (heldSkillCards.length >= 3) break;
+              }
+            }
+          }
+
+          for (let i = activeProjectiles.length - 1; i >= 0; i--) {
+            const proj = activeProjectiles[i];
+            let targetObj = proj.targetKind === 'shade'
+              ? engine.shades.find(s => s.id === proj.targetId)
+              : engine.drifters.find(d => d.id === proj.targetId && d.state !== 'removed');
+            if (!targetObj) {
+              const fallback = findBestAutoAimTarget();
+              if (fallback) {
+                proj.targetKind = fallback.kind;
+                proj.targetId = fallback.id;
+                targetObj = fallback.ref;
+              } else {
+                activeProjectiles.splice(i, 1);
+                continue;
+              }
+            }
+            const tx = targetObj.pos[0], ty = targetObj.pos[1] + 0.15, tz = targetObj.pos[2];
+            const dx = tx - proj.pos[0], dy = ty - proj.pos[1], dz = tz - proj.pos[2];
+            const dist = Math.hypot(dx, dy, dz);
+            const stepDist = proj.speed * (1 / 60);
+            if (dist <= Math.max(1.05, stepDist * 1.15)) {
+              const hitPos = [tx, targetObj.pos[1], tz];
+              if (proj.targetKind === 'shade') {
+                const idx = engine.shades.findIndex(s => s.id === proj.targetId);
+                if (idx !== -1) engine.shades.splice(idx, 1);
+                if (proj.skill.id === 'thunder') {
+                  for (const other of engine.shades) {
+                    if (Math.hypot(other.pos[0] - tx, other.pos[2] - tz) <= 5.5) {
+                      other.state = 'stunned';
+                      other.stateTicksLeft = 60;
+                    }
+                  }
+                }
+              } else {
+                if (targetObj.stolen > 0) {
+                  const gY = getGroundHeight(engine.night, tx, tz) ?? engine.player.pos[1];
+                  for (let k = 0; k < targetObj.stolen; k++) {
+                    const ang = (k * Math.PI * 2) / targetObj.stolen;
+                    engine.motes.push({
+                      id: `M${engine.moteCounter++}`,
+                      pos: [tx + Math.cos(ang) * 0.5, gY, tz + Math.sin(ang) * 0.5],
+                      kind: 'dropped',
+                      ttlTicks: 900,
+                      spawnTick: engine.simTick
+                    });
+                  }
+                }
+                targetObj.state = 'removed';
+                targetObj.stolen = 0;
+              }
+              engine.score += proj.skill.bonusScore;
+              renderer.triggerSkillImpactVfx(hitPos, proj.skill.color, proj.skill.core);
+              audio.playMonsterDeath(proj.skill.id);
+              const fCss = `rgba(${Math.round(proj.skill.color[0] * 255)}, ${Math.round(proj.skill.color[1] * 255)}, ${Math.round(proj.skill.color[2] * 255)}, 0.45)`;
+              triggerFlash(fCss);
+              pushMonsterToast(`${proj.skill.icon} Tiêu diệt quái bằng ${proj.skill.name}! (+${proj.skill.bonusScore})`, 'shade', 2400);
+              activeProjectiles.splice(i, 1);
+            } else {
+              proj.trail.unshift([proj.pos[0], proj.pos[1], proj.pos[2]]);
+              if (proj.trail.length > 6) proj.trail.pop();
+              proj.dir[0] = dx / dist;
+              proj.dir[1] = dy / dist;
+              proj.dir[2] = dz / dist;
+              proj.pos[0] += proj.dir[0] * stepDist;
+              proj.pos[1] += proj.dir[1] * stepDist;
+              proj.pos[2] += proj.dir[2] * stepDist;
+            }
+          }
+
+          let pickedMote = false;
+          for (let ei = 0; ei < events.length; ei++) {
+            if (events[ei].name === 'mote_picked') { pickedMote = true; break; }
+          }
+          if (pickedMote) {
+            remainingMoteIdSet.clear();
+            for (let i = 0; i < engine.motes.length; i++) {
+              remainingMoteIdSet.add(engine.motes[i].id);
+            }
+            for (let i = 0; i < prevMoteCount; i++) {
+              const pm = prevMotesPool[i];
+              if (!remainingMoteIdSet.has(pm.id)) {
+                renderer.triggerMotePickupVfx([pm.x, pm.y, pm.z], getMoteColor(pm.id));
+              }
+            }
+          }
 
           if (!wasWindWarn && engine.wind.warning) {
             audio.playWindWarning();
@@ -816,10 +1581,10 @@ if (isBenchmarkMode) {
             showSubtitle(`⏱ Còn ${secCeil}s tới bình minh!`, 950);
           }
 
+          const spawnedShades = [];
           for (const evt of events) {
             if (evt.name === 'mote_picked') {
               audio.playMotePickup();
-              renderer.spawnBurst(engine.player.pos, PALETTE.moteCore, 8, 2.2, 1.8);
             } else if (evt.name === 'charm_picked') {
               audio.playCharmPickup();
               renderer.spawnBurst(engine.player.pos, PALETTE.goldUi, 14, 3.0, 2.4);
@@ -851,9 +1616,34 @@ if (isBenchmarkMode) {
             } else if (evt.name === 'dash') {
               audio.playDash();
             } else if (evt.name === 'shade_spawned') {
-              audio.playShadeSpawn();
-              showSubtitle('🌑 Bóng Mực vừa xuất hiện!', 2400);
-              recentShadeAlerts.push({ id: evt.data.id, expiresAt: performance.now() + 4000 });
+              spawnedShades.push(evt.data.id);
+            }
+          }
+
+          if (spawnedShades.length > 0) {
+            audio.playShadeSpawn();
+            const burstCol = settings.colorblind ? PALETTE.shadeRimColorblind : PALETTE.shadeRim;
+            let firstShade = null;
+            for (const sid of spawnedShades) {
+              const sh = engine.shades.find(s => s.id === sid);
+              if (sh) {
+                if (!firstShade) firstShade = sh;
+                renderer.spawnBurst([sh.pos[0], sh.pos[1] - 0.5, sh.pos[2]], burstCol, 14, 3.0, 2.0);
+              }
+            }
+            const locSuffix = firstShade ? ` (${getRelativeDirLabel(engine.player.pos, firstShade.pos, camYawDeg)})` : '';
+            const msg = spawnedShades.length > 1
+              ? `🌑 ${spawnedShades.length} Bóng Mực vừa xuất hiện${locSuffix}!`
+              : `🌑 Bóng Mực vừa xuất hiện${locSuffix}!`;
+            pushMonsterToast(msg, 'shade', 3400);
+          }
+
+          for (const d of engine.drifters) {
+            if (d.state !== 'removed' && !knownDrifterIds.has(d.id)) {
+              knownDrifterIds.add(d.id);
+              renderer.spawnBurst(d.pos, PALETTE.drifter, 12, 2.8, 1.6);
+              const locSuffix = ` (${getRelativeDirLabel(engine.player.pos, d.pos, camYawDeg)})`;
+              pushMonsterToast(`💨 Gió Lạc vừa xuất hiện${locSuffix}!`, 'drifter', 3400);
             }
           }
 
@@ -865,20 +1655,136 @@ if (isBenchmarkMode) {
       accumulator -= tickInterval;
     }
 
-    const yawRad = (camYawDeg * Math.PI) / 180;
-    const px = engine.player.pos[0], py = engine.player.pos[1], pz = engine.player.pos[2];
-    const shakeX = !settings.reducedMotion && cameraShakeTicks > 0 ? Math.sin(now * 0.08) * 0.35 : 0;
-    const shakeY = !settings.reducedMotion && cameraShakeTicks > 0 ? Math.cos(now * 0.09) * 0.25 : 0;
-    const camera = {
-      eye: [px - Math.sin(yawRad) * 10.5 + shakeX, py + 6.5 + shakeY, pz - Math.cos(yawRad) * 10.5],
-      target: [px, py + 1.4, pz]
-    };
+    let camera;
+    if (uiScreen === 'menu' || uiScreen === 'intro') {
+      const menuAng = settings.reducedMotion ? 0.45 : now * 0.00018;
+      const cx = currentNight === 2 ? 35 : 0;
+      camera = {
+        eye: [cx + Math.cos(menuAng) * 26.0, 9.5, Math.sin(menuAng) * 26.0],
+        target: [cx, 2.2, 0]
+      };
+    } else {
+      const alpha = uiScreen === 'playing' && engine.state === 'playing'
+        ? Math.max(0, Math.min(1, accumulator / tickInterval))
+        : 1.0;
+      const jumpDist = Math.hypot(engine.player.pos[0] - prevPlayerPos[0], engine.player.pos[2] - prevPlayerPos[2]);
+      if (engine.player.respawnTicks > 0 || jumpDist > 4.0) {
+        renderPlayerPos[0] = engine.player.pos[0];
+        renderPlayerPos[1] = engine.player.pos[1];
+        renderPlayerPos[2] = engine.player.pos[2];
+      } else {
+        renderPlayerPos[0] = prevPlayerPos[0] + (engine.player.pos[0] - prevPlayerPos[0]) * alpha;
+        renderPlayerPos[1] = prevPlayerPos[1] + (engine.player.pos[1] - prevPlayerPos[1]) * alpha;
+        renderPlayerPos[2] = prevPlayerPos[2] + (engine.player.pos[2] - prevPlayerPos[2]) * alpha;
+      }
 
-    renderer.render(engine, camera, delta / 1000, {
-      colorblind: settings.colorblind,
-      reducedMotion: settings.reducedMotion
-    });
-    if (uiScreen === 'playing' || uiScreen === 'paused') updateHUD(camera);
+      const yawRad = (camYawDeg * Math.PI) / 180;
+      const px = renderPlayerPos[0], py = renderPlayerPos[1], pz = renderPlayerPos[2];
+      if (!camFocusInit || Math.hypot(px - camFocusPos[0], pz - camFocusPos[2]) > 8.0) {
+        camFocusPos[0] = px; camFocusPos[1] = py; camFocusPos[2] = pz;
+        camFocusInit = true;
+      } else {
+        const k = Math.min(1.0, delta * 0.022);
+        camFocusPos[0] += (px - camFocusPos[0]) * k;
+        camFocusPos[1] += (py - camFocusPos[1]) * k;
+        camFocusPos[2] += (pz - camFocusPos[2]) * k;
+      }
+      const dtSec = Math.max(0.001, delta / 1000);
+      const targetDashOffset = (engine.player.dashTicks > 0 && !settings.reducedMotion) ? 0.52 : 0;
+      dashCamOffset += (targetDashOffset - dashCamOffset) * (1 - Math.exp(-11.5 * dtSec));
+      const effDist = camDist + dashCamOffset;
+      const shakeX = !settings.reducedMotion && cameraShakeTicks > 0 ? Math.sin(now * 0.08) * 0.35 : 0;
+      const shakeY = !settings.reducedMotion && cameraShakeTicks > 0 ? Math.cos(now * 0.09) * 0.25 : 0;
+      const camTarget = [camFocusPos[0], camFocusPos[1] + 1.36, camFocusPos[2]];
+      const desiredEye = [
+        camFocusPos[0] - Math.sin(yawRad) * effDist + shakeX,
+        camFocusPos[1] + camHeight + shakeY,
+        camFocusPos[2] - Math.cos(yawRad) * effDist
+      ];
+      const rawClip = computeCameraObstructionFraction(camTarget, desiredEye);
+      const clipRate = rawClip < camClipFrac ? 24.0 : 9.5;
+      camClipFrac += (rawClip - camClipFrac) * (1 - Math.exp(-clipRate * dtSec));
+      const eyeX = camTarget[0] + (desiredEye[0] - camTarget[0]) * camClipFrac;
+      let eyeY = camTarget[1] + (desiredEye[1] - camTarget[1]) * camClipFrac;
+      const eyeZ = camTarget[2] + (desiredEye[2] - camTarget[2]) * camClipFrac;
+      const eyeG = getGroundHeight(engine.night, eyeX, eyeZ);
+      if (eyeG !== null && eyeY < eyeG + 0.55) {
+        eyeY = eyeG + 0.55;
+      }
+      camera = {
+        eye: [eyeX, eyeY, eyeZ],
+        target: camTarget
+      };
+
+      // Zero-cost GPU compositor edge motion-blur pulse when turning camera
+      const yawDelta = Math.abs(camYawDeg - prevCamYawDeg);
+      prevCamYawDeg = camYawDeg;
+      const instYawSpeed = Math.min(24.0, yawDelta / Math.max(0.004, dtSec) * 0.016);
+      camYawVel += (instYawSpeed - camYawVel) * (1 - Math.exp(-16.0 * dtSec));
+      if (motionBlurOverlay) {
+        const targetOp = (!settings.reducedMotion && uiScreen === 'playing' && camYawVel > 0.35)
+          ? Math.min(0.65, (camYawVel - 0.35) * 0.12)
+          : 0;
+        if (Math.abs(targetOp - lastMotionOpacity) > 0.015 || (targetOp === 0 && lastMotionOpacity !== 0)) {
+          lastMotionOpacity = targetOp < 0.015 ? 0 : targetOp;
+          motionBlurOverlay.style.opacity = lastMotionOpacity === 0 ? '0' : lastMotionOpacity.toFixed(2);
+        }
+      }
+    }
+
+    if (!document.hidden) {
+      let skillState = null;
+      if (uiScreen === 'playing' || uiScreen === 'paused') {
+        const lockTarget = heldSkillCards.length > 0 ? findBestAutoAimTarget() : null;
+        const lockGroundY = lockTarget
+          ? (getGroundHeight(engine.night, lockTarget.pos[0], lockTarget.pos[2]) ?? lockTarget.pos[1]) + 0.08
+          : 0;
+        skillState = {
+          cards: groundSkillCards,
+          projectiles: activeProjectiles,
+          lockTargetPos: lockTarget ? [lockTarget.pos[0], lockGroundY, lockTarget.pos[2]] : null,
+          lockColor: heldSkillCards.length > 0 ? heldSkillCards[0].color : null
+        };
+      }
+
+      if (uiScreen === 'playing' && engine.state === 'playing') {
+        const yawRadA = (camYawDeg * Math.PI) / 180;
+        let nearDist = null;
+        let nearPan = 0;
+        let nearArch = 0;
+        const scanAudio = (pos, arch) => {
+          const dx = pos[0] - engine.player.pos[0];
+          const dz = pos[2] - engine.player.pos[2];
+          const d = Math.hypot(dx, pos[1] - engine.player.pos[1], dz);
+          if (nearDist === null || d < nearDist) {
+            nearDist = d;
+            const right = -dx * Math.cos(yawRadA) + dz * Math.sin(yawRadA);
+            nearPan = Math.max(-1, Math.min(1, right / Math.max(2.0, Math.hypot(dx, dz))));
+            nearArch = arch;
+          }
+        };
+        for (let i = 0; i < engine.shades.length; i++) {
+          const sh = engine.shades[i];
+          scanAudio(sh.pos, getShadeVariant(engine.seed, sh.id, false).archetype);
+        }
+        for (let i = 0; i < engine.drifters.length; i++) {
+          const dr = engine.drifters[i];
+          if (dr.state !== 'removed') scanAudio(dr.pos, 4);
+        }
+        audio.updateMonsterProximityAudio(nearDist, nearPan, nearArch, now);
+        audio.updateWindAudio(engine.night === 3 && engine.wind.active, engine.night === 3 && engine.wind.warning);
+      } else {
+        audio.stopAmbientLoops();
+      }
+
+      renderer.render(engine, camera, delta / 1000, {
+        colorblind: settings.colorblind,
+        reducedMotion: settings.reducedMotion,
+        renderPlayerPos: (uiScreen === 'playing' || uiScreen === 'paused') ? renderPlayerPos : undefined,
+        skillState
+      });
+      if (uiScreen === 'playing' || uiScreen === 'paused') updateHUD(camera);
+    }
 
     requestAnimationFrame(loop);
   }
