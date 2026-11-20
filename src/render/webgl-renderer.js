@@ -375,9 +375,10 @@ export class WebGLRenderer {
     return { screenX, screenY, ndcX, ndcY, inFront, onScreen };
   }
 
-  render(engine, camera, dtSec = 1 / 60) {
+  render(engine, camera, dtSec = 1 / 60, options = {}) {
     const gl = this.gl;
     if (!gl) return;
+    const colorblind = !!options.colorblind;
 
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -488,25 +489,50 @@ export class WebGLRenderer {
       this.drawMesh(this.meshes.ring, new Mat4().translate(pad.pos[0], pad.pos[1] + 0.18, pad.pos[2]).scale(pulsePad, 1, pulsePad), PALETTE.lanternCore, 0.85);
     }
 
-    // 2. Render Great Lanterns (Tiered Pagoda Lanterns + Safe Zone Ring)
+    // 2. Render Great Lanterns (Tiered Pagoda Lanterns + Fuel Bar + 1Hz Low-Fuel Blink + Unlit Compression/Tears)
     for (const lantern of engine.lanterns) {
       const lx = lantern.pos[0], ly = lantern.pos[1], lz = lantern.pos[2];
-      // Stone base plinth
+      // Stone base plinth & wooden post
       this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 0.4, lz).scale(1.3, 0.8, 1.3), PALETTE.lanternOff);
-      // Wooden post
       this.drawMesh(this.meshes.cylinder, new Mat4().translate(lx, ly + 1.4, lz).scale(0.32, 1.3, 0.32), PALETTE.wood);
-      // Core glow
-      const coreColor = lantern.lit ? PALETTE.lanternCore : PALETTE.lanternOff;
-      const rimColor = lantern.lit ? PALETTE.lanternLit : PALETTE.lanternOff;
-      const glowEmissive = lantern.lit ? 0.9 : 0.05;
-      this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 2.4, lz).scale(0.9, 0.95, 0.9), coreColor, glowEmissive);
-      // Double-tiered curved pagoda roof + finial
-      this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 3.05, lz).scale(1.85, 0.55, 1.85), rimColor, lantern.lit ? 0.35 : 0.0);
-      this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 3.45, lz).scale(1.1, 0.45, 1.1), PALETTE.wood);
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(lx, ly + 3.78, lz).scale(0.28, 0.28, 0.28), PALETTE.goldUi, lantern.lit ? 0.8 : 0.1);
+
       if (lantern.lit) {
-        const ringPulse = 5.95 + 0.1 * Math.sin(timeSec * 2.5);
-        this.drawMesh(this.meshes.ring, new Mat4().translate(lx, ly + 0.06, lz).scale(ringPulse, 1.0, ringPulse), PALETTE.lanternLit, 0.6);
+        const fuelRatio = Math.max(0, Math.min(1, lantern.fuelUnits / 6000));
+        const isLowFuel = lantern.fuelUnits < 1800;
+        const blinkOn = !isLowFuel || Math.floor(timeSec * 2.0) % 2 === 0; // 1 Hz blink
+
+        const coreColor = blinkOn ? PALETTE.lanternCore : PALETTE.lanternOff;
+        const rimColor = blinkOn ? PALETTE.lanternLit : PALETTE.lanternOff;
+        const glowEmissive = blinkOn ? 0.9 : 0.1;
+
+        this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 2.4, lz).scale(0.9, 0.95, 0.9), coreColor, glowEmissive);
+        this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 3.05, lz).scale(1.85, 0.55, 1.85), rimColor, blinkOn ? 0.35 : 0.0);
+        this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 3.45, lz).scale(1.1, 0.45, 1.1), PALETTE.wood);
+        this.drawMesh(this.meshes.sphere, new Mat4().translate(lx, ly + 3.78, lz).scale(0.28, 0.28, 0.28), PALETTE.goldUi, blinkOn ? 0.8 : 0.1);
+
+        // Safe zone ring active only when fuel >= 30
+        if (!isLowFuel) {
+          const ringPulse = 5.95 + 0.1 * Math.sin(timeSec * 2.5);
+          this.drawMesh(this.meshes.ring, new Mat4().translate(lx, ly + 0.06, lz).scale(ringPulse, 1.0, ringPulse), PALETTE.lanternLit, 0.6);
+        }
+
+        // Fuel Bar floating above lit lantern (blinks at 1 Hz when fuel < 30)
+        if (blinkOn) {
+          const barW = 1.6;
+          const fillW = Math.max(0.05, barW * fuelRatio);
+          const barColor = isLowFuel
+            ? (colorblind ? PALETTE.dangerColorblind : PALETTE.danger)
+            : PALETTE.lanternCore;
+          this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 4.35, lz).scale(barW + 0.08, 0.18, 0.08), PALETTE.shadeBody, 0.2);
+          this.drawMesh(this.meshes.cube, new Mat4().translate(lx - (barW - fillW) / 2, ly + 4.35, lz).scale(fillW, 0.14, 0.12), barColor, 0.95);
+        }
+      } else {
+        // Unlit lantern: vertically compressed by 20% + visible dark paper tears
+        this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 2.3, lz).scale(0.95, 0.76, 0.95), PALETTE.lanternOff, 0.05);
+        this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 2.3, lz + 0.48).rotateY(0.15).scale(0.42, 0.22, 0.05), PALETTE.shadeBody, 0.0);
+        this.drawMesh(this.meshes.cube, new Mat4().translate(lx + 0.48, ly + 2.25, lz).scale(0.05, 0.28, 0.38), PALETTE.shadeBody, 0.0);
+        this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 2.84, lz).scale(1.85, 0.44, 1.85), PALETTE.lanternOff, 0.0);
+        this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 3.16, lz).scale(1.1, 0.36, 1.1), PALETTE.wood);
       }
     }
 
@@ -529,29 +555,31 @@ export class WebGLRenderer {
       this.drawMesh(this.meshes.cube, new Mat4().translate(cx, cy, cz).rotateY(timeSec * 2.5).scale(0.4, 0.65, 0.18), PALETTE.mayScarf, 0.5);
     }
 
-    // 5. Render Ink Shadows (Body #120A1A, Rim #7A3CFF, Stunned #3A3450)
+    // 5. Render Ink Shadows (Body #120A1A, Rim #7A3CFF or #00B3FF in colorblind mode, Stunned #3A3450)
+    const shadeRimColor = colorblind ? PALETTE.shadeRimColorblind : PALETTE.shadeRim;
     for (const shade of engine.shades) {
       const sx = shade.pos[0], sy = shade.pos[1], sz = shade.pos[2];
       const isStunned = shade.state === 'stunned';
       const isSpawning = shade.state === 'spawning';
+      const isDraining = shade.state === 'drain';
       const hover = isStunned ? -0.15 : Math.sin(timeSec * 4.0 + sx) * 0.1;
       const sc = isStunned ? [1.3, 0.55, 1.3] : isSpawning ? [0.6, 0.6, 0.6] : [1.05, 1.35, 1.05];
       const bodyCol = isStunned ? PALETTE.shadeStun : PALETTE.shadeBody;
       this.drawMesh(this.meshes.sphere, new Mat4().translate(sx, sy + hover, sz).scale(sc[0], sc[1], sc[2]), bodyCol, isStunned ? 0.25 : 0.05);
-      this.drawMesh(this.meshes.ring, new Mat4().translate(sx, sy - 0.65, sz).scale(0.85, 1, 0.85), PALETTE.shadeRim, 0.8);
+      this.drawMesh(this.meshes.ring, new Mat4().translate(sx, sy - 0.65, sz).scale(isDraining ? 1.15 : 0.85, 1, isDraining ? 1.15 : 0.85), shadeRimColor, 0.85);
       // Orbiting ink wisps or dizzy stun stars
       for (let w = 0; w < 3; w++) {
-        const wa = timeSec * (isStunned ? 5.5 : 3.0) + (w * Math.PI * 2) / 3;
+        const wa = timeSec * (isStunned ? 5.5 : isDraining ? 6.0 : 3.0) + (w * Math.PI * 2) / 3;
         const wr = isStunned ? 0.55 : 0.68;
         const wy = isStunned ? sy + 0.55 : sy + hover + Math.sin(wa * 2) * 0.2;
-        const wCol = isStunned ? PALETTE.goldUi : PALETTE.shadeBody;
-        this.drawMesh(this.meshes.sphere, new Mat4().translate(sx + Math.cos(wa) * wr, wy, sz + Math.sin(wa) * wr).scale(0.22, 0.22, 0.22), wCol, isStunned ? 0.85 : 0.1);
+        const wCol = isStunned ? PALETTE.goldUi : (isDraining ? shadeRimColor : PALETTE.shadeBody);
+        this.drawMesh(this.meshes.sphere, new Mat4().translate(sx + Math.cos(wa) * wr, wy, sz + Math.sin(wa) * wr).scale(0.22, 0.22, 0.22), wCol, isStunned || isDraining ? 0.85 : 0.1);
       }
       // Eyes facing player
       const sYaw = Math.atan2(engine.player.pos[0] - sx, engine.player.pos[2] - sz);
       const ex = sx + Math.sin(sYaw) * 0.42;
       const ez = sz + Math.cos(sYaw) * 0.42;
-      this.drawMesh(this.meshes.cube, new Mat4().translate(ex, sy + hover + 0.2, ez).rotateY(sYaw).scale(0.32, 0.1, 0.1), PALETTE.shadeRim, 0.95);
+      this.drawMesh(this.meshes.cube, new Mat4().translate(ex, sy + hover + 0.2, ez).rotateY(sYaw).scale(0.32, 0.1, 0.1), shadeRimColor, 0.95);
     }
 
     // 6. Render Drifters (Gió Lạc #8FA3B8)

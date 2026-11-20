@@ -111,6 +111,10 @@ export class SoundEffects {
     this.tone('sine', 300, 460, 0.6, 0.09);
   }
 
+  playLanternOut() {
+    this.tone('sine', 330, 140, 0.45, 0.14);
+  }
+
   playWin() {
     [523.25, 659.25, 783.99, 1046.5].forEach((f, idx) => {
       this.tone('triangle', f, f, 0.45, 0.16, idx * 0.11);

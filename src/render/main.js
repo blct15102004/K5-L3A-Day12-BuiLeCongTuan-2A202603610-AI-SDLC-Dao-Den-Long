@@ -4,7 +4,7 @@ import { WebGLRenderer } from './webgl-renderer.js';
 import { SoundEffects } from './audio.js';
 
 const STORAGE_KEY = 'dao_den_long_settings_v1';
-const defaultSettings = { volume: 0.7, sensitivity: 0.4 };
+const defaultSettings = { volume: 0.7, sensitivity: 0.4, colorblind: false };
 
 function loadSettings() {
   try {
@@ -55,6 +55,7 @@ const hudLanterns = document.getElementById('hud-lanterns');
 const hudScore = document.getElementById('hud-score');
 const hudFps = document.getElementById('hud-fps');
 const moteBar = document.getElementById('mote-bar');
+const moteBarLabel = document.getElementById('mote-bar-label');
 const cdDash = document.getElementById('cd-dash');
 const cdPulse = document.getElementById('cd-pulse');
 const interactPrompt = document.getElementById('interact-prompt');
@@ -74,11 +75,12 @@ const nextNightBtn = document.getElementById('next-night-btn');
 const retryNightBtn = document.getElementById('retry-night-btn');
 const volSlider = document.getElementById('setting-volume');
 const sensSlider = document.getElementById('setting-sensitivity');
+const colorblindToggle = document.getElementById('setting-colorblind');
 const volValLabel = document.getElementById('setting-volume-val');
 const sensValLabel = document.getElementById('setting-sensitivity-val');
 
-// Build 10 mote bar slots once
-for (let i = 0; i < 10; i++) {
+// Build up to 20 mote bar slots once
+for (let i = 0; i < 20; i++) {
   const slot = document.createElement('div');
   slot.className = 'mote-slot';
   moteBar.appendChild(slot);
@@ -89,8 +91,14 @@ function syncSettingsUI() {
   volValLabel.innerText = `${volSlider.value}%`;
   sensSlider.value = settings.sensitivity.toFixed(2);
   sensValLabel.innerText = settings.sensitivity.toFixed(2);
+  colorblindToggle.checked = !!settings.colorblind;
 }
 syncSettingsUI();
+
+colorblindToggle.addEventListener('change', () => {
+  settings.colorblind = colorblindToggle.checked;
+  saveSettings(settings);
+});
 
 volSlider.addEventListener('input', () => {
   settings.volume = parseInt(volSlider.value, 10) / 100;
@@ -276,24 +284,33 @@ function updateHUD(camera) {
   hudNight.innerText = engine.map.name;
   const mins = Math.floor(engine.timeLeft / 60);
   const secs = Math.floor(engine.timeLeft % 60);
-  hudTimer.innerText = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  hudTimer.classList.toggle('timer-danger', engine.timeLeft <= 30.0);
+  const timerStr = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  const isDangerTime = engine.timeLeft <= 30.0;
+  hudTimer.innerText = (isDangerTime && settings.colorblind ? '⚠ ' : '') + timerStr;
+  hudTimer.classList.toggle('timer-danger', isDangerTime);
+  hudTimer.classList.toggle('colorblind-alert', isDangerTime && settings.colorblind);
 
   if (engine.night === 3 && (engine.wind.warning || engine.wind.active)) {
     hudWind.classList.remove('hidden');
-    hudWind.innerText = engine.wind.warning ? '🍃 SẮP CÓ GIÓ MẠNH!' : `💨 GIÓ THỔI (${Math.round(engine.wind.dir_deg)}°)`;
+    const warnPrefix = settings.colorblind ? '⚠ ' : '';
+    hudWind.innerText = engine.wind.warning ? `${warnPrefix}🍃 SẮP CÓ GIÓ MẠNH!` : `${warnPrefix}💨 GIÓ THỔI (${Math.round(engine.wind.dir_deg)}°)`;
+    hudWind.classList.toggle('colorblind-alert', !!settings.colorblind);
   } else {
     hudWind.classList.add('hidden');
   }
 
   const litCount = engine.lanterns.filter(l => l.lit).length;
-  hudLanterns.innerText = `${litCount} / ${engine.lanterns.length}`;
+  const reqLit = Math.ceil(engine.tuning.win_ratio * engine.lanterns.length);
+  hudLanterns.innerText = `${litCount} / ${engine.lanterns.length} (cần ${reqLit})`;
   hudScore.innerText = `${engine.score}`;
   hudFps.innerText = `${currentFps} FPS`;
 
-  // Mote 10-slot bar
+  // Progressive Mote Capacity Bar (10..20 slots)
+  const cap = engine.getCarryCapacity();
+  moteBarLabel.innerText = `Đom Đóm (${engine.player.carried} / ${cap})`;
   const slots = moteBar.children;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 20; i++) {
+    slots[i].classList.toggle('hidden', i >= cap);
     slots[i].classList.toggle('filled', i < engine.player.carried);
   }
 
@@ -307,17 +324,26 @@ function updateHUD(camera) {
   cdPulse.innerText = pulseSec > 0 ? `${pulseSec.toFixed(1)}s` : (canPulse ? 'Sẵn' : `${engine.player.carried}/3`);
   cdPulse.classList.toggle('on-cd', !canPulse);
 
-  // Prompt near unlit lantern (within 2.0m)
+  // Prompt near valid lantern (unlit OR lit with fuel < 100)
   let nearLantern = null;
   for (const l of engine.lanterns) {
-    if (!l.lit && distXZ(engine.player.pos, l.pos) <= engine.tuning.interact_radius && Math.abs(engine.player.pos[1] - l.pos[1]) <= 2.5) {
+    const isValid = !l.lit || (l.lit && l.fuelUnits < 6000);
+    if (isValid && distXZ(engine.player.pos, l.pos) <= engine.tuning.interact_radius && Math.abs(engine.player.pos[1] - l.pos[1]) <= 2.5) {
       nearLantern = l;
       break;
     }
   }
   if (nearLantern && uiScreen === 'playing') {
     interactPrompt.classList.remove('hidden');
-    interactPrompt.innerText = `E — Nạp ánh sáng (${nearLantern.deposited}/10)`;
+    if (!nearLantern.lit) {
+      const cost = nearLantern.everLit ? engine.tuning.relight_cost : engine.tuning.lantern_cost;
+      interactPrompt.innerText = nearLantern.everLit
+        ? `E — Thắp lại đèn (${nearLantern.deposited}/${cost})`
+        : `E — Nạp ánh sáng (${nearLantern.deposited}/${cost})`;
+    } else {
+      const pct = Math.round(nearLantern.fuelUnits / 60);
+      interactPrompt.innerText = `E — Tiếp nhiên liệu (${pct}%)`;
+    }
   } else {
     interactPrompt.classList.add('hidden');
   }
@@ -432,8 +458,9 @@ function loop(now) {
         for (const evt of events) {
           if (evt.name === 'mote_picked') audio.playMotePickup();
           else if (evt.name === 'charm_picked') audio.playCharmPickup();
-          else if (evt.name === 'deposit') audio.playDeposit();
+          else if (evt.name === 'deposit' || evt.name === 'refuel') audio.playDeposit();
           else if (evt.name === 'lantern_lit') audio.playLanternLit();
+          else if (evt.name === 'lantern_out') audio.playLanternOut();
           else if (evt.name === 'pulse') {
             audio.playPulse();
             renderer.triggerPulseWave(engine.player.pos);
@@ -462,7 +489,7 @@ function loop(now) {
     target: [px, py + 1.4, pz]
   };
 
-  renderer.render(engine, camera, delta / 1000);
+  renderer.render(engine, camera, delta / 1000, { colorblind: settings.colorblind });
   if (uiScreen === 'playing' || uiScreen === 'paused') {
     updateHUD(camera);
   }
