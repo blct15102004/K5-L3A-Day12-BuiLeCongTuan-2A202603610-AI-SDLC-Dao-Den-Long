@@ -411,22 +411,58 @@ export class WebGLRenderer {
 
     const timeSec = engine.simTick / 60.0;
 
-    // 0. Sea of Clouds plane (#12384A)
-    const cloudMat = new Mat4().translate(30, -14.0, 0).scale(220, 0.5, 220);
+    // 0. Sea of Clouds (#12384A) + Drifting Cloud Banks + Starry Night Sky
+    const cloudMat = new Mat4().translate(30, -14.5, 0).scale(240, 0.5, 240);
     this.drawMesh(this.meshes.cube, cloudMat, PALETTE.cloudSea, 0.25);
 
-    // 1. Render Island Geometry by Night
+    for (let i = 0; i < 18; i++) {
+      const ang = (i * Math.PI * 2) / 18 + timeSec * 0.015;
+      const dist = 48 + (i % 3) * 14;
+      const cx = (engine.night === 2 ? 35 : 0) + Math.cos(ang) * dist;
+      const cz = Math.sin(ang) * dist;
+      const cy = -8.5 + Math.sin(timeSec * 0.6 + i) * 0.7;
+      const cw = 18 + (i % 4) * 5;
+      this.drawMesh(this.meshes.sphere, new Mat4().translate(cx, cy, cz).scale(cw, 4.2, cw * 0.75), PALETTE.cloudSea, 0.18);
+      this.drawMesh(this.meshes.sphere, new Mat4().translate(cx + 3, cy + 1.1, cz - 2).scale(cw * 0.65, 3.0, cw * 0.55), PALETTE.fog, 0.22);
+    }
+
+    // Distant Night Stars
+    for (let i = 0; i < 28; i++) {
+      const sa = (i * 2.39996);
+      const sr = 72 + (i % 5) * 6;
+      const sx = (engine.night === 2 ? 35 : 0) + Math.cos(sa) * sr;
+      const sz = Math.sin(sa) * sr;
+      const sy = 22 + (i % 7) * 4;
+      const twinkle = 0.22 + 0.16 * Math.sin(timeSec * 2.5 + i);
+      this.drawMesh(this.meshes.sphere, new Mat4().translate(sx, sy, sz).scale(twinkle, twinkle, twinkle), PALETTE.moteCore, 0.95);
+    }
+
+    // 1. Render Floating Island Geometry by Night (with tapered floating undersides)
     if (engine.night === 1) {
+      this.drawMesh(this.meshes.cone, new Mat4().translate(0, -6.5, 0).scale(38, -10.0, 38), PALETTE.wood);
       this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, -1.5, 0).scale(40, 3.0, 40), PALETTE.sand);
       this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, -0.45, 0).scale(38.5, 1.0, 38.5), PALETTE.grass);
+      // Decorative stone border markers & trees around outer rim
+      for (let i = 0; i < 8; i++) {
+        const a = (i * Math.PI * 2) / 8 + 0.35;
+        const tx = Math.cos(a) * 35.5, tz = Math.sin(a) * 35.5;
+        this.drawMesh(this.meshes.cylinder, new Mat4().translate(tx, 1.1, tz).scale(0.45, 2.2, 0.45), PALETTE.wood);
+        this.drawMesh(this.meshes.cone, new Mat4().translate(tx, 2.9, tz).scale(2.1, 2.4, 2.1), PALETTE.grass);
+      }
     } else if (engine.night === 2) {
       for (const cx of [0, 70]) {
+        this.drawMesh(this.meshes.cone, new Mat4().translate(cx, -5.8, 0).scale(26, -8.5, 26), PALETTE.wood);
         this.drawMesh(this.meshes.cylinder, new Mat4().translate(cx, -1.5, 0).scale(28, 3.0, 28), PALETTE.sand);
         this.drawMesh(this.meshes.cylinder, new Mat4().translate(cx, -0.45, 0).scale(26.5, 1.0, 26.5), PALETTE.grass);
       }
-      // Bamboo bridge x in [26, 44], z in [-2, 2]
+      // Bamboo bridge x in [26, 44], z in [-2, 2] with bamboo posts
       this.drawMesh(this.meshes.cube, new Mat4().translate(35, -0.25, 0).scale(18, 0.5, 4), PALETTE.wood);
+      for (const bx of [28, 32, 38, 42]) {
+        this.drawMesh(this.meshes.cylinder, new Mat4().translate(bx, 0.35, 1.9).scale(0.18, 0.9, 0.18), PALETTE.sand);
+        this.drawMesh(this.meshes.cylinder, new Mat4().translate(bx, 0.35, -1.9).scale(0.18, 0.9, 0.18), PALETTE.sand);
+      }
     } else if (engine.night === 3) {
+      this.drawMesh(this.meshes.cone, new Mat4().translate(0, -7.2, 0).scale(43, -11.5, 43), PALETTE.wood);
       // Tier 0 (r=45, Y=0)
       this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, -1.5, 0).scale(45, 3.0, 45), PALETTE.sand);
       this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, -0.45, 0).scale(43.5, 1.0, 43.5), PALETTE.grass);
@@ -435,41 +471,52 @@ export class WebGLRenderer {
       // Tier 2 (disc r=8, Y=6)
       this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, 3.0, 0).scale(8, 6.0, 8), PALETTE.sand);
       this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, 5.6, 0).scale(7.9, 0.9, 7.9), PALETTE.grass);
-      // Two ramps at 30 deg and 150 deg (rotateY(-rad) maps +X to (cos, sin))
+      // Two ramps at 30 deg and 150 deg
       this.drawMesh(this.meshes.ramp, new Mat4().rotateY(-Math.PI / 6), PALETTE.wood);
       this.drawMesh(this.meshes.ramp, new Mat4().rotateY(-(5 * Math.PI) / 6), PALETTE.wood);
       // Bell Tower at (0, 6, 0), radius 2, height 8
       this.drawMesh(this.meshes.cylinder, new Mat4().translate(0, 10.0, 0).scale(2.0, 8.0, 2.0), PALETTE.wood);
-      this.drawMesh(this.meshes.cone, new Mat4().translate(0, 15.0, 0).scale(3.2, 2.2, 3.2), PALETTE.mayScarf);
+      this.drawMesh(this.meshes.cone, new Mat4().translate(0, 15.0, 0).scale(3.4, 2.4, 3.4), PALETTE.mayScarf);
+      this.drawMesh(this.meshes.cone, new Mat4().translate(0, 16.4, 0).scale(1.6, 1.2, 1.6), PALETTE.goldUi, 0.35);
       this.drawMesh(this.meshes.sphere, new Mat4().translate(0, 11.2, 0).scale(1.1, 1.3, 1.1), PALETTE.goldUi, 0.4);
     }
 
     // Launch Pads
     for (const pad of engine.map.launchPads) {
+      const pulsePad = 1.05 + 0.1 * Math.sin(timeSec * 4.5);
       this.drawMesh(this.meshes.cylinder, new Mat4().translate(pad.pos[0], pad.pos[1] + 0.08, pad.pos[2]).scale(1.0, 0.16, 1.0), PALETTE.goldUi, 0.65);
-      this.drawMesh(this.meshes.ring, new Mat4().translate(pad.pos[0], pad.pos[1] + 0.18, pad.pos[2]).scale(1.1, 1, 1.1), PALETTE.lanternCore, 0.8);
+      this.drawMesh(this.meshes.ring, new Mat4().translate(pad.pos[0], pad.pos[1] + 0.18, pad.pos[2]).scale(pulsePad, 1, pulsePad), PALETTE.lanternCore, 0.85);
     }
 
-    // 2. Render Lanterns
+    // 2. Render Great Lanterns (Tiered Pagoda Lanterns + Safe Zone Ring)
     for (const lantern of engine.lanterns) {
       const lx = lantern.pos[0], ly = lantern.pos[1], lz = lantern.pos[2];
-      this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 0.5, lz).scale(1.1, 1.0, 1.1), PALETTE.wood);
-      this.drawMesh(this.meshes.cylinder, new Mat4().translate(lx, ly + 1.5, lz).scale(0.35, 1.2, 0.35), PALETTE.wood);
+      // Stone base plinth
+      this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 0.4, lz).scale(1.3, 0.8, 1.3), PALETTE.lanternOff);
+      // Wooden post
+      this.drawMesh(this.meshes.cylinder, new Mat4().translate(lx, ly + 1.4, lz).scale(0.32, 1.3, 0.32), PALETTE.wood);
+      // Core glow
       const coreColor = lantern.lit ? PALETTE.lanternCore : PALETTE.lanternOff;
       const rimColor = lantern.lit ? PALETTE.lanternLit : PALETTE.lanternOff;
-      this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 2.4, lz).scale(0.85, 0.85, 0.85), coreColor, lantern.lit ? 0.85 : 0.05);
-      this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 3.1, lz).scale(1.7, 0.65, 1.7), rimColor, lantern.lit ? 0.35 : 0.0);
+      const glowEmissive = lantern.lit ? 0.9 : 0.05;
+      this.drawMesh(this.meshes.cube, new Mat4().translate(lx, ly + 2.4, lz).scale(0.9, 0.95, 0.9), coreColor, glowEmissive);
+      // Double-tiered curved pagoda roof + finial
+      this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 3.05, lz).scale(1.85, 0.55, 1.85), rimColor, lantern.lit ? 0.35 : 0.0);
+      this.drawMesh(this.meshes.cone, new Mat4().translate(lx, ly + 3.45, lz).scale(1.1, 0.45, 1.1), PALETTE.wood);
+      this.drawMesh(this.meshes.sphere, new Mat4().translate(lx, ly + 3.78, lz).scale(0.28, 0.28, 0.28), PALETTE.goldUi, lantern.lit ? 0.8 : 0.1);
       if (lantern.lit) {
-        this.drawMesh(this.meshes.ring, new Mat4().translate(lx, ly + 0.06, lz).scale(6.0, 1.0, 6.0), PALETTE.lanternLit, 0.55);
+        const ringPulse = 5.95 + 0.1 * Math.sin(timeSec * 2.5);
+        this.drawMesh(this.meshes.ring, new Mat4().translate(lx, ly + 0.06, lz).scale(ringPulse, 1.0, ringPulse), PALETTE.lanternLit, 0.6);
       }
     }
 
-    // 3. Render Motes (Core #FFF6C2 + Halo #FFE58A)
+    // 3. Render Fireflies / Motes (Core #FFF6C2 + Soft Halo #FFE58A)
     for (const mote of engine.motes) {
-      const bob = Math.sin(timeSec * 3.5 + mote.pos[0]) * 0.18 + 0.45;
-      const mx = mote.pos[0], my = mote.pos[1] + bob, mz = mote.pos[2];
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(mx, my, mz).scale(0.32, 0.32, 0.32), PALETTE.moteCore, 0.95);
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(mx, my, mz).scale(0.55, 0.55, 0.55), PALETTE.moteHalo, 0.45);
+      const bob = Math.sin(timeSec * 3.5 + mote.pos[0]) * 0.18 + 0.5;
+      const swayX = Math.cos(timeSec * 2.2 + mote.pos[2]) * 0.1;
+      const mx = mote.pos[0] + swayX, my = mote.pos[1] + bob, mz = mote.pos[2];
+      this.drawMesh(this.meshes.sphere, new Mat4().translate(mx, my, mz).scale(0.3, 0.3, 0.3), PALETTE.moteCore, 0.98);
+      this.drawMesh(this.meshes.sphere, new Mat4().translate(mx, my, mz).scale(0.58, 0.58, 0.58), PALETTE.moteHalo, 0.45);
     }
 
     // 4. Render Wind Charms (Bùa Gió: #C8102E + gold #F2C14E)
@@ -477,21 +524,34 @@ export class WebGLRenderer {
       if (!charm.available) continue;
       const mapC = engine.map.charms.find(c => c.id === charm.id);
       if (!mapC) continue;
-      const cx = mapC.pos[0], cy = mapC.pos[1] + 0.8 + Math.sin(timeSec * 3.0) * 0.15, cz = mapC.pos[2];
+      const cx = mapC.pos[0], cy = mapC.pos[1] + 0.85 + Math.sin(timeSec * 3.0) * 0.15, cz = mapC.pos[2];
       this.drawMesh(this.meshes.cube, new Mat4().translate(cx, cy, cz).rotateY(timeSec * 2.5).scale(0.55, 0.8, 0.14), PALETTE.goldUi, 0.65);
       this.drawMesh(this.meshes.cube, new Mat4().translate(cx, cy, cz).rotateY(timeSec * 2.5).scale(0.4, 0.65, 0.18), PALETTE.mayScarf, 0.5);
     }
 
-    // 5. Render Shades (Body #120A1A, Rim #7A3CFF, Stunned #3A3450)
+    // 5. Render Ink Shadows (Body #120A1A, Rim #7A3CFF, Stunned #3A3450)
     for (const shade of engine.shades) {
       const sx = shade.pos[0], sy = shade.pos[1], sz = shade.pos[2];
       const isStunned = shade.state === 'stunned';
       const isSpawning = shade.state === 'spawning';
+      const hover = isStunned ? -0.15 : Math.sin(timeSec * 4.0 + sx) * 0.1;
       const sc = isStunned ? [1.3, 0.55, 1.3] : isSpawning ? [0.6, 0.6, 0.6] : [1.05, 1.35, 1.05];
       const bodyCol = isStunned ? PALETTE.shadeStun : PALETTE.shadeBody;
-      this.drawMesh(this.meshes.sphere, new Mat4().translate(sx, sy, sz).scale(sc[0], sc[1], sc[2]), bodyCol, isStunned ? 0.25 : 0.05);
-      this.drawMesh(this.meshes.ring, new Mat4().translate(sx, sy - 0.65, sz).scale(0.8, 1, 0.8), PALETTE.shadeRim, 0.75);
-      this.drawMesh(this.meshes.cube, new Mat4().translate(sx, sy + 0.2, sz + 0.38).scale(0.28, 0.12, 0.12), PALETTE.shadeRim, 0.9);
+      this.drawMesh(this.meshes.sphere, new Mat4().translate(sx, sy + hover, sz).scale(sc[0], sc[1], sc[2]), bodyCol, isStunned ? 0.25 : 0.05);
+      this.drawMesh(this.meshes.ring, new Mat4().translate(sx, sy - 0.65, sz).scale(0.85, 1, 0.85), PALETTE.shadeRim, 0.8);
+      // Orbiting ink wisps or dizzy stun stars
+      for (let w = 0; w < 3; w++) {
+        const wa = timeSec * (isStunned ? 5.5 : 3.0) + (w * Math.PI * 2) / 3;
+        const wr = isStunned ? 0.55 : 0.68;
+        const wy = isStunned ? sy + 0.55 : sy + hover + Math.sin(wa * 2) * 0.2;
+        const wCol = isStunned ? PALETTE.goldUi : PALETTE.shadeBody;
+        this.drawMesh(this.meshes.sphere, new Mat4().translate(sx + Math.cos(wa) * wr, wy, sz + Math.sin(wa) * wr).scale(0.22, 0.22, 0.22), wCol, isStunned ? 0.85 : 0.1);
+      }
+      // Eyes facing player
+      const sYaw = Math.atan2(engine.player.pos[0] - sx, engine.player.pos[2] - sz);
+      const ex = sx + Math.sin(sYaw) * 0.42;
+      const ez = sz + Math.cos(sYaw) * 0.42;
+      this.drawMesh(this.meshes.cube, new Mat4().translate(ex, sy + hover + 0.2, ez).rotateY(sYaw).scale(0.32, 0.1, 0.1), PALETTE.shadeRim, 0.95);
     }
 
     // 6. Render Drifters (Gió Lạc #8FA3B8)
@@ -500,7 +560,7 @@ export class WebGLRenderer {
       const dx = drifter.pos[0], dy = drifter.pos[1] + Math.sin(timeSec * 5.0) * 0.2, dz = drifter.pos[2];
       this.drawMesh(
         this.meshes.cube,
-        new Mat4().translate(dx, dy, dz).rotateY(timeSec * 4.0).scale(1.4, 0.18, 0.45),
+        new Mat4().translate(dx, dy, dz).rotateY(timeSec * 4.0).scale(1.5, 0.16, 0.45),
         PALETTE.drifter,
         0.55
       );
@@ -534,26 +594,33 @@ export class WebGLRenderer {
       }
     }
 
-    // 9. Render Mây (Hide during respawn wait, blink when invuln)
+    // 9. Render May (Young Lantern Keeper with Nón Lá, Flowing Scarf & Hanging Mini Lantern)
     if (engine.player.respawnTicks === 0) {
       const invulnVisible = engine.player.invulnTicks === 0 || Math.floor(engine.player.invulnTicks / 4) % 2 === 0;
       if (invulnVisible) {
         const px = engine.player.pos[0], py = engine.player.pos[1], pz = engine.player.pos[2];
         const yaw = Math.atan2(engine.player.facing[0], engine.player.facing[1]);
+        const speed = Math.hypot(engine.player.vel[0], engine.player.vel[2]);
+        const walkBob = speed > 0.2 && engine.player.grounded ? Math.abs(Math.sin(timeSec * 14.0)) * 0.08 : 0;
 
-        // Robe (#E8E2D0)
-        this.drawMesh(this.meshes.cylinder, new Mat4().translate(px, py + 0.75, pz).scale(0.55, 1.05, 0.55), PALETTE.mayRobe);
-        // Red Scarf (#C8102E)
-        this.drawMesh(this.meshes.cylinder, new Mat4().translate(px, py + 1.25, pz).scale(0.42, 0.18, 0.42), PALETTE.mayScarf);
+        // Cream Robe (#E8E2D0)
+        this.drawMesh(this.meshes.cylinder, new Mat4().translate(px, py + 0.72 + walkBob, pz).scale(0.52, 1.0, 0.52), PALETTE.mayRobe);
+        // Crimson Scarf Collar & Trailing Ribbon (#C8102E)
+        this.drawMesh(this.meshes.cylinder, new Mat4().translate(px, py + 1.22 + walkBob, pz).scale(0.42, 0.16, 0.42), PALETTE.mayScarf);
+        const tailWave = Math.sin(timeSec * 8.0) * 0.08;
+        const tx = px - Math.sin(yaw) * 0.36 + Math.cos(yaw) * tailWave;
+        const tz = pz - Math.cos(yaw) * 0.36 - Math.sin(yaw) * tailWave;
+        this.drawMesh(this.meshes.cube, new Mat4().translate(tx, py + 1.08 + walkBob, tz).rotateY(yaw).scale(0.18, 0.38, 0.08), PALETTE.mayScarf);
         // Head
-        this.drawMesh(this.meshes.sphere, new Mat4().translate(px, py + 1.48, pz).scale(0.46, 0.46, 0.46), [0.92, 0.78, 0.68]);
+        this.drawMesh(this.meshes.sphere, new Mat4().translate(px, py + 1.46 + walkBob, pz).scale(0.44, 0.44, 0.44), [0.92, 0.78, 0.68]);
         // Conical Hat (Nón lá)
-        this.drawMesh(this.meshes.cone, new Mat4().translate(px, py + 1.82, pz).scale(1.15, 0.48, 1.15), PALETTE.sand);
-        // Hanging mini lantern on brim
-        const sway = Math.sin(timeSec * 6.0) * 0.08;
-        const lx = px + Math.sin(yaw + 0.7) * 0.55 + sway;
-        const lz = pz + Math.cos(yaw + 0.7) * 0.55;
-        this.drawMesh(this.meshes.cube, new Mat4().translate(lx, py + 1.38, lz).scale(0.22, 0.28, 0.22), PALETTE.lanternLit, 0.9);
+        this.drawMesh(this.meshes.cone, new Mat4().translate(px, py + 1.80 + walkBob, pz).scale(1.18, 0.48, 1.18), PALETTE.sand);
+        // Hanging mini lantern from hat brim
+        const sway = Math.sin(timeSec * 6.0) * 0.06;
+        const lx = px + Math.sin(yaw + 0.75) * 0.6 + sway;
+        const lz = pz + Math.cos(yaw + 0.75) * 0.6;
+        this.drawMesh(this.meshes.cube, new Mat4().translate(lx, py + 1.38 + walkBob, lz).scale(0.22, 0.28, 0.22), PALETTE.lanternLit, 0.95);
+        this.drawMesh(this.meshes.sphere, new Mat4().translate(lx, py + 1.38 + walkBob, lz).scale(0.14, 0.14, 0.14), PALETTE.lanternCore, 1.0);
       }
     }
   }
