@@ -40,6 +40,7 @@ const keys = {};
 let isMouseDown = false;
 let lastMouseX = 0;
 let pauseKeyTriggered = false;
+let lastPointerUnlockMs = 0;
 
 // DOM Elements
 const hudEl = document.getElementById('hud');
@@ -110,6 +111,23 @@ function openSettings(fromScreen) {
   settingsOverlay.classList.remove('hidden');
 }
 
+function lockPointer() {
+  try {
+    if (canvas.requestPointerLock && document.pointerLockElement !== canvas) {
+      const p = canvas.requestPointerLock();
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    }
+  } catch { /* ignore */ }
+}
+
+function unlockPointer() {
+  try {
+    if (document.pointerLockElement === canvas && document.exitPointerLock) {
+      document.exitPointerLock();
+    }
+  } catch { /* ignore */ }
+}
+
 function showScreen(screen) {
   uiScreen = screen;
   menuOverlay.classList.toggle('hidden', screen !== 'menu');
@@ -120,6 +138,10 @@ function showScreen(screen) {
   hudEl.classList.toggle('hidden', !inGame);
   bottomHudEl.classList.toggle('hidden', !inGame);
   controlsGuideEl.classList.toggle('hidden', !inGame);
+  canvas.classList.toggle('hide-cursor', screen === 'playing');
+  if (screen !== 'playing') {
+    unlockPointer();
+  }
   if (!inGame) {
     interactPrompt.classList.add('hidden');
     lanternArrow.classList.add('hidden');
@@ -143,6 +165,7 @@ function beginNightPlay() {
   camYawDeg = 0;
   lastCountdownSec = -1;
   showScreen('playing');
+  lockPointer();
 }
 
 // Menu & Modal Button Listeners
@@ -159,6 +182,7 @@ document.getElementById('btn-resume').addEventListener('click', () => {
     engine.prevButtons.pause = false;
   }
   showScreen('playing');
+  lockPointer();
 });
 document.getElementById('btn-pause-restart').addEventListener('click', beginNightPlay);
 document.getElementById('btn-pause-settings').addEventListener('click', () => openSettings('paused'));
@@ -186,6 +210,7 @@ window.addEventListener('keydown', (e) => {
   }
   keys[e.code] = true;
   if ((e.code === 'Escape' || e.code === 'KeyP') && !e.repeat) {
+    if (e.code === 'Escape' && performance.now() - lastPointerUnlockMs < 150) return;
     if (uiScreen === 'playing' || uiScreen === 'paused') {
       pauseKeyTriggered = true;
     }
@@ -199,15 +224,31 @@ window.addEventListener('keyup', (e) => {
 canvas.addEventListener('mousedown', (e) => {
   isMouseDown = true;
   lastMouseX = e.clientX;
+  if (uiScreen === 'playing') {
+    lockPointer();
+  }
 });
 
 window.addEventListener('mouseup', () => { isMouseDown = false; });
 
 window.addEventListener('mousemove', (e) => {
-  if (isMouseDown && uiScreen === 'playing') {
-    const dx = e.clientX - lastMouseX;
-    camYawDeg -= dx * settings.sensitivity;
-    lastMouseX = e.clientX;
+  if (uiScreen === 'playing') {
+    if (document.pointerLockElement === canvas) {
+      camYawDeg -= e.movementX * settings.sensitivity;
+    } else if (isMouseDown) {
+      const dx = e.clientX - lastMouseX;
+      camYawDeg -= dx * settings.sensitivity;
+      lastMouseX = e.clientX;
+    }
+  }
+});
+
+document.addEventListener('pointerlockchange', () => {
+  if (document.pointerLockElement !== canvas && uiScreen === 'playing' && engine.state === 'playing') {
+    lastPointerUnlockMs = performance.now();
+    engine.step({ pause: true });
+    engine.prevButtons.pause = false;
+    showScreen('paused');
   }
 });
 
@@ -360,6 +401,7 @@ function loop(now) {
         engine.step({ pause: true });
         engine.prevButtons.pause = false;
         showScreen(engine.state === 'paused' ? 'paused' : 'playing');
+        if (uiScreen === 'playing') lockPointer();
       } else if (uiScreen === 'playing' && engine.state === 'playing') {
         let mx = 0, mz = 0;
         if (keys['KeyW'] || keys['ArrowUp']) mz += 1;
